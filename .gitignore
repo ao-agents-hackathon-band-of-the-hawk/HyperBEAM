@@ -22,6 +22,7 @@ logs
 rebar3.crashdump
 *~
 /venv
+__pycache__
 
 *.json
 !.vscode/*
@@ -31,6 +32,9 @@ rebar3.crashdump
 
 native/hb_beamr/*.o
 native/hb_beamr/*.d
+
+attestation_sdk.log
+verifier.log
 
 priv/*
 .DS_STORE

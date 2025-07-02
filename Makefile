@@ -121,3 +121,29 @@ setup-genesis-wasm: $(GENESIS_WASM_SERVER_DIR)
 	fi
 	@cd $(GENESIS_WASM_SERVER_DIR) && npm install > /dev/null 2>&1 && \
 		echo "Installed genesis-wasm@1.0 server."
+
+# dev_cc variables
+CC_DIR = native/dev_cc
+
+# Set up dev_cc Python environment
+setup-cc: $(CC_DIR)
+	@echo "Setting up dev_cc Python environment..." && \
+	if ! command -v python3 > /dev/null; then \
+		echo "Error: Python 3 is not installed. Please install Python 3 before continuing."; \
+		echo "For Ubuntu/Debian, you can install it with:"; \
+		echo "  apt-get update && apt-get install -y python3 python3-pip python3-venv"; \
+		exit 1; \
+	fi && \
+	if ! command -v uv > /dev/null; then \
+		echo "Installing uv package manager..."; \
+		curl -LsSf https://astral.sh/uv/install.sh | sh && \
+		export PATH="$$HOME/.cargo/bin:$$PATH"; \
+	fi && \
+	cd $(CC_DIR) && \
+	if [ ! -d ".venv" ]; then \
+		echo "Creating Python virtual environment..."; \
+		uv venv; \
+	fi && \
+	echo "Installing Python dependencies..." && \
+	uv sync && \
+	echo "Installed dev_cc Python environment successfully."
