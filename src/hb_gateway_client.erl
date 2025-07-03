@@ -385,3 +385,37 @@ ao_dataitem_test() ->
     ?event(gateway, {l2_dataitem, Res}),
     Data = maps:get(<<"data">>, Res),
     ?assertEqual(<<"Hello World">>, Data).
+store_model_test() ->
+    % Store the model file directly
+    _Node = hb_http_server:start_node(#{
+        http_connect_timeout => 15000  % 15 seconds for large model downloads
+    }),
+    {ok, Res} = data(<<"XOJ8FBxa6sGLwChnxhF2L71WkKLSKq1aU5Yn5WnFLrY">>, #{}),
+    ?event(file_res, Res),
+    StoreConfig = #{
+    <<"store-module">> => hb_store_fs,
+    <<"name">> => <<"./models">>  % Directory where files will be stored
+    },
+    Key = <<"chat2.gguf">>,  % The filename/key in the store
+    case hb_store:write(StoreConfig, Key, Res) of
+        ok ->
+            ?event(store_file, Res),
+            ok;
+        Err ->
+            ?event(store_file_error,  Err),
+            {error, Err}
+    end.
+%% @doc Test read model
+read_model_test() ->
+    StoreOpts = #{
+        <<"store-module">> => hb_store_fs,
+        <<"name">> => <<"./models">>
+    },
+    case hb_store:read(StoreOpts, "chat2.gguf") of
+        {ok, Bin} -> 
+            ?event(read_file, Bin),
+            {ok, Bin};
+        not_found -> 
+            not_found
+    end.
+    
