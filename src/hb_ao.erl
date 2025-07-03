@@ -105,7 +105,6 @@
 %%% Exports for tests in hb_ao_test_vectors.erl:
 -export([deep_set/4, is_exported/4]).
 -include("include/hb.hrl").
-
 -define(TEMP_OPTS, [add_key, force_message, cache_control, spawn_worker]).
 
 %% @doc Get the value of a message's key by running its associated device

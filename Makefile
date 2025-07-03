@@ -3,8 +3,9 @@
 compile:
 	rebar3 compile
 
-WAMR_VERSION = 2.2.0
+WAMR_VERSION = WAMR-2.2.0-wasi-nn
 WAMR_DIR = _build/wamr
+WASI_NN_DIR = _build/wasi_nn
 
 GENESIS_WASM_BRANCH = tillathehun0/cu-experimental
 GENESIS_WASM_REPO = https://github.com/permaweb/ao.git
@@ -32,24 +33,25 @@ else
 endif
 
 wamr: $(WAMR_DIR)/lib/libvmlib.a
-
+wasi_nn: $(WASI_NN_DIR)/lib/libwasi_nn_backend.so
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
-	CFLAGS="-DHB_DEBUG=1" rebar3 compile
+	CFLAGS="-DHB_DEBUG=1 -fPIC" rebar3 compile
 
 debug-clean:
 	rm -rf priv
-	rm -rf $(WAMR_DIR)
+	rm -rf $(WAMR_DIR)/lib
 
 # Clone the WAMR repository at our target release
 $(WAMR_DIR):
 	git clone \
-		https://github.com/bytecodealliance/wasm-micro-runtime.git \
+		https://github.com/apuslabs/wasm-micro-runtime.git \
 		$(WAMR_DIR) \
-		-b WAMR-$(WAMR_VERSION) \
+		-b $(WAMR_VERSION) \
 		--single-branch
 
 $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
+	
 	sed -i '742a tbl_inst->is_table64 = 1;' ./_build/wamr/core/iwasm/aot/aot_runtime.c; \
 	cmake \
 		$(WAMR_FLAGS) \
@@ -62,7 +64,7 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 		-DWAMR_BUILD_EXCE_HANDLING=1 \
 		-DWAMR_BUILD_SHARED_MEMORY=0 \
 		-DWAMR_BUILD_AOT=1 \
-		-DWAMR_BUILD_LIBC_WASI=0 \
+		-DWAMR_BUILD_LIBC_WASI=1 \
 		-DWAMR_BUILD_FAST_INTERP=0 \
 		-DWAMR_BUILD_INTERP=1 \
 		-DWAMR_BUILD_JIT=0 \
@@ -71,9 +73,24 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
         -DWAMR_BUILD_TAIL_CALL=1 \
         -DWAMR_BUILD_AOT_STACK_FRAME=1 \
         -DWAMR_BUILD_MEMORY_PROFILING=1 \
-        -DWAMR_BUILD_DUMP_CALL_STACK=1
+        -DWAMR_BUILD_DUMP_CALL_STACK=1 \
+		-DWAMR_BUILD_SHARED=0 
 	make -C $(WAMR_DIR)/lib -j8
 
+$(WASI_NN_DIR):
+	git clone \
+		https://github.com/apuslabs/wasi_nn_backend.git \
+		$(WASI_NN_DIR) \
+		-b stage/wasi-nn \
+		--single-branch
+
+$(WASI_NN_DIR)/lib/libwasi_nn_backend.so: $(WASI_NN_DIR) 
+	cmake \
+		$(WAMR_FLAGS) \
+		-S $(WASI_NN_DIR) \
+		-B $(WASI_NN_DIR)/build 
+	make -C $(WASI_NN_DIR)/build -j8
+	cp $(WASI_NN_DIR)/build/libwasi_nn_backend.so ./native/wasi_nn_llama
 clean:
 	rebar3 clean
 
