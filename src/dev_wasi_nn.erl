@@ -28,7 +28,7 @@ info(_Msg1, _Msg2, _Opts) ->
 
 infer(_M1, M2, Opts) ->
     ModelID = hb_ao:get(<<"model-id">>, M2, "test/qwen2.5-14b-instruct-q2_k.gguf", Opts),
-    ModelConfig = hb_ao:get(<<"config">>, M2, "{\"n_gpu_layers\":48,\"ctx_size\":20480}", Opts),
+    ModelConfig = hb_ao:get(<<"config">>, M2, "{\"n_gpu_layers\":48,\"ctx_size\":64000}", Opts),
     Prompt = hb_ao:get(<<"prompt">>, M2, Opts),
     case dev_wasi_nn_nif:load_by_name_with_config_once(undefined, ModelID, ModelConfig) of
         {ok, Context} ->
