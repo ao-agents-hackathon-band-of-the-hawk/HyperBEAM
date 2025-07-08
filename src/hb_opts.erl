@@ -95,7 +95,8 @@ default_message() ->
             #{<<"name">> => <<"wasi@1.0">>, <<"module">> => dev_wasi},
             #{<<"name">> => <<"wasm-64@1.0">>, <<"module">> => dev_wasm},
             #{<<"name">> => <<"wasi-nn@1.0">>, <<"module">> => dev_wasi_nn},
-            #{<<"name">> => <<"whois@1.0">>, <<"module">> => dev_whois}
+            #{<<"name">> => <<"whois@1.0">>, <<"module">> => dev_whois},
+            #{<<"name">> => <<"private@1.0">>, <<"module">> => dev_private}
         ],
         %% Default execution cache control options
         cache_control => [<<"no-cache">>, <<"no-store">>],
