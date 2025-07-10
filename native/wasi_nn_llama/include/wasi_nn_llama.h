@@ -143,6 +143,9 @@
 
  __attribute__((visibility("default"))) wasi_nn_error
  init_backend(void **ctx) ;
+
+ __attribute__((visibility("default"))) wasi_nn_error
+ init_backend_with_config(void **ctx, const char *config, uint32_t config_len);
  
  __attribute__((visibility("default"))) wasi_nn_error
  deinit_backend(void *ctx);
@@ -152,11 +155,14 @@
 	const char *config, uint32_t config_len, graph *g);
 
  __attribute__((visibility("default"))) wasi_nn_error
- init_execution_context(void *ctx, graph g, graph_execution_context *exec_ctx);
+ init_execution_context(void *ctx, const char *session_id, graph_execution_context *exec_ctx);
+
+ __attribute__((visibility("default"))) wasi_nn_error
+ close_execution_context(void *ctx, graph_execution_context exec_ctx);
  
  __attribute__((visibility("default"))) wasi_nn_error
  run_inference(void *ctx, graph_execution_context exec_ctx, uint32_t index,
-		   tensor *input_tensor,tensor_data output_tensor, uint32_t *output_tensor_size);
+		   tensor *input_tensor,tensor_data output_tensor, uint32_t *output_tensor_size, const char *options);
 
  __attribute__((visibility("default"))) wasi_nn_error
  set_input(void *ctx, graph_execution_context exec_ctx, uint32_t index,

@@ -5,12 +5,12 @@
 -export([
     init_backend/0,
     load_by_name_with_config/3,
-    init_execution_context/1,
+    init_execution_context/2,
+    close_execution_context/2,
     deinit_backend/1,
-    run_inference/2
+    run_inference/3
 ]).
--export([load_by_name_with_config_once/3, init_execution_context_once/1]).
--export([start_cache_owner/0, cache_owner_loop/0]).  % Export cache owner process functions
+-export([init_execution_context_once/2, switch_model/2]).
 
 %% Module-level cache
 -define(CACHE_TAB, wasi_nn_cache).
@@ -85,7 +85,10 @@ init_backend() ->
 load_by_name_with_config(_Context, _Path, _Config) ->
     erlang:nif_error("NIF library not loaded").
 
-init_execution_context(_Context) ->
+init_execution_context(_Context, _SessionId) ->
+    erlang:nif_error("NIF library not loaded").
+
+close_execution_context(_Context, _ExecContextId) ->
     erlang:nif_error("NIF library not loaded").
 
 % set_input(_Context, _Prompt) ->
@@ -97,8 +100,73 @@ init_execution_context(_Context) ->
 %     erlang:nif_error("NIF library not loaded").
 deinit_backend(_Context) ->
     erlang:nif_error("NIF library not loaded").
-run_inference(_Context, _Prompt) ->
+run_inference(_Context, _ExecContextId, _Prompt) ->
     erlang:nif_error("NIF library not loaded").
+
+%% ============================================================================
+%% GLOBAL PERSISTENT CONTEXT MANAGEMENT
+%% ============================================================================
+
+%% Get or create the global llama.cpp backend context (persistent across processes)
+get_or_create_global_context() ->
+    ensure_cache_table(),
+    case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, global_backend}) of
+        [{_, {ok, Context}}] ->
+            io:format("Using existing global backend context~n"),
+            {ok, Context};
+        [] ->
+            io:format("Creating new global backend context~n"),
+            case init_backend() of
+                {ok, Context} ->
+                    ets:insert(?CACHE_TAB, {{?SINGLETON_KEY, global_backend}, {ok, Context}}),
+                    io:format("Global backend context created and cached~n"),
+                    {ok, Context};
+                Error ->
+                    io:format("Failed to create global backend: ~p~n", [Error]),
+                    Error
+            end
+    end.
+
+%% Switch to a different model while keeping the same backend
+switch_model(ModelPath, Config) ->
+    ensure_cache_table(),
+    case get_or_create_global_context() of
+        {ok, Context} ->
+            ModelKey = {?SINGLETON_KEY, current_model},
+            CurrentModel = case ets:lookup(?CACHE_TAB, ModelKey) of
+                [{_, ModelInfo}] -> ModelInfo;
+                [] -> undefined
+            end,
+            
+            NewModelInfo = {ModelPath, Config},
+            
+            case CurrentModel of
+                NewModelInfo ->
+                    io:format("Model ~p already loaded, skipping~n", [ModelPath]),
+                    {ok, Context};
+                _ ->
+                    io:format("Switching from ~p to ~p~n", [CurrentModel, NewModelInfo]),
+                    case load_by_name_with_config(Context, ModelPath, Config) of
+                        ok ->
+                            ets:insert(?CACHE_TAB, {ModelKey, NewModelInfo}),
+                            io:format("Model switched successfully to ~p~n", [ModelPath]),
+                            {ok, Context};
+                        Error ->
+                            io:format("Failed to switch model: ~p~n", [Error]),
+                            {error, {model_switch_failed, Error}}
+                    end
+            end;
+        Error ->
+            Error
+    end.
+
+%% Get information about the currently loaded model
+get_current_model_info() ->
+    ensure_cache_table(),
+    case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, current_model}) of
+        [{_, ModelInfo}] -> {ok, ModelInfo};
+        [] -> {error, no_model_loaded}
+    end.
 
 %% Helper function to safely access the ETS table
 ensure_cache_table() ->
@@ -120,71 +188,14 @@ ensure_cache_table() ->
             end
     end.
 
-%% Function to ensure model is only loaded once globally
-load_by_name_with_config_once(_Context, Path, Config) ->
+%% Function to ensure execution context is only initialized once per session
+init_execution_context_once(Context, SessionId) ->
     ensure_cache_table(),
-    
-    % Check if this model is already loaded globally
-    case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, model_loaded}) of
-        [{_, {ok, StoredContext}}] ->
-            io:format("Model already loaded globally~n"),
-            {ok, StoredContext};
-        [] ->
-            InitResult =
-                case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, backend_init}) of
-                    [{_, {ok, ExistingContext}}] ->
-                        {ok, ExistingContext};
-                    [] ->
-                        try
-                            BackendResult = init_backend(),
-                            case BackendResult of
-                                {ok, _NewContext} ->
-                                    ets:insert(?CACHE_TAB, {
-                                        {?SINGLETON_KEY, backend_init}, BackendResult
-                                    }),
-                                    BackendResult;
-                                Error ->
-                                    Error
-                            end
-                        catch
-                            _:UnknownError ->
-                                {error, {backend_init_failed, UnknownError}}
-                        end
-                end,
-
-            case InitResult of
-                {ok, FinalContext} ->
-                    ?event({load_model, FinalContext, Path, Config}),
-                    try
-                        LoadResult = load_by_name_with_config(FinalContext, Path, Config),
-                        case LoadResult of
-                            ok ->
-                                ets:insert(?CACHE_TAB, {
-                                    {?SINGLETON_KEY, model_loaded}, {ok, FinalContext}
-                                }),
-								?event({model_load_cached, FinalContext}),
-                                {ok, FinalContext};
-                            LoadError ->
-                                ets:delete(?CACHE_TAB, {?SINGLETON_KEY, backend_init}),
-                                {error, {model_load_failed, LoadError}}
-                        end
-                    catch
-                        _:UnknownError2 ->
-                            ets:delete(?CACHE_TAB, {?SINGLETON_KEY, backend_init}),
-                            {error, {model_load_failed, UnknownError2}}
-                    end;
-                InitError ->
-                    InitError
-            end
-    end.
-
-%% Function to ensure execution context is only initialized once globally
-init_execution_context_once(Context) ->
-    ensure_cache_table(),
-    case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, context_initialized}) of
-        [{_, ok}] ->
-            io:format("Execution context already initialized globally~n"),
-            ok;
+    SessionKey = {?SINGLETON_KEY, context_initialized, SessionId},
+    case ets:lookup(?CACHE_TAB, SessionKey) of
+        [{_, {ok, ExecContextId}}] ->
+            io:format("Execution context already initialized for session ~p~n", [SessionId]),
+            {ok, ExecContextId};
         [] ->
             ModelContext =
                 case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, model_loaded}) of
@@ -192,15 +203,15 @@ init_execution_context_once(Context) ->
                         StoredContext;
                     [] ->
                         % If we don't have a cached context, use the provided one
-                        % This is a fallback but ideally load_by_name_with_config_once should be called first
+                        % This is a fallback but ideally switch_model should be called first
                         Context
                 end,
 
-            Result = init_execution_context(ModelContext),
+            Result = init_execution_context(ModelContext, SessionId),
             case Result of
-                ok ->
-                    ets:insert(?CACHE_TAB, {{?SINGLETON_KEY, context_initialized}, ok}),
-                    ok;
+                {ok, ExecContextId} ->
+                    ets:insert(?CACHE_TAB, {SessionKey, {ok, ExecContextId}}),
+                    {ok, ExecContextId};
                 Error ->
                     Error
             end
@@ -210,16 +221,37 @@ run_inference_test() ->
     Path = "test/qwen2.5-14b-instruct-q2_k.gguf",
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
+    SessionId = "test_session_1",
     Prompt1 = "What is the meaning of life",
-    {ok, Context} = init_backend(),
-    ?event({load_model, Context, Path, Config}),
-    load_by_name_with_config(Context, Path, Config),
-    init_execution_context(Context),
-    {ok, Output1} = run_inference(Context, Prompt1),
-	?event({run_inference, Context, Prompt1, Output1}),
+    
+    % Test 1: Use persistent context management
+    {ok, Context} = switch_model(Path, Config),
+    ?event(dev_wasi_nn_nif, {persistent_load, Context, Path, Config}),
+    
+    % Test 2: Create session and run inference
+    {ok, ExecContextId} = init_execution_context(Context, SessionId),
+    {ok, Output1} = run_inference(Context, ExecContextId, Prompt1),
+	?event(dev_wasi_nn_nif, {run_inference, Context, ExecContextId, Prompt1, Output1}),
     ?assertNotEqual(Output1, ""),
+    
+    % Test 3: Multiple inference calls on same session
     Prompt2 = "Who are you",
-    {ok, Output2} = run_inference(Context, Prompt2),
-	?event({run_inference, Context, Prompt2, Output2}),
+    {ok, Output2} = run_inference(Context, ExecContextId, Prompt2),
+	?event(dev_wasi_nn_nif, {run_inference, Context, ExecContextId, Prompt2, Output2}),
     ?assertNotEqual(Output2, ""),
-    deinit_backend(Context).
+    
+    % Test 4: Test that context is reused (should be very fast)
+    StartTime = erlang:system_time(millisecond),
+    {ok, Context2} = switch_model(Path, Config),
+    EndTime = erlang:system_time(millisecond),
+    ReuseDuration = EndTime - StartTime,
+    ?event(dev_wasi_nn_nif, {context_reuse, ReuseDuration}),
+    ?assert(ReuseDuration < 100), % Should be nearly instant
+    ?assertEqual(Context, Context2), % Should be the same context
+    
+    % Test 5: Check current model info
+    {ok, ModelInfo} = get_current_model_info(),
+    ?assertEqual({Path, Config}, ModelInfo),
+    
+    % Cleanup
+    close_execution_context(Context, ExecContextId).

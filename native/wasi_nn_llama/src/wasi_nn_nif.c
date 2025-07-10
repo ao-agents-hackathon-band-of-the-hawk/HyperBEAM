@@ -42,15 +42,18 @@ static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     }
 	// Load all required functions once
 	g_wasi_nn_functions.init_backend = (init_backend_fn)dlsym(g_wasi_nn_functions.handle, "init_backend");
+    g_wasi_nn_functions.init_backend_with_config = (init_backend_with_config_fn)dlsym(g_wasi_nn_functions.handle, "init_backend_with_config");
     g_wasi_nn_functions.deinit_backend = (deinit_backend_fn)dlsym(g_wasi_nn_functions.handle, "deinit_backend");
     g_wasi_nn_functions.init_execution_context = (init_execution_context_fn)dlsym(g_wasi_nn_functions.handle, "init_execution_context");
+    g_wasi_nn_functions.close_execution_context = (close_execution_context_fn)dlsym(g_wasi_nn_functions.handle, "close_execution_context");
     g_wasi_nn_functions.set_input = (set_input_fn)dlsym(g_wasi_nn_functions.handle, "set_input");
     g_wasi_nn_functions.compute = (compute_fn)dlsym(g_wasi_nn_functions.handle, "compute");
     g_wasi_nn_functions.get_output = (get_output_fn)dlsym(g_wasi_nn_functions.handle, "get_output");
     g_wasi_nn_functions.load_by_name_with_config = (load_by_name_with_config_fn)dlsym(g_wasi_nn_functions.handle, "load_by_name_with_config");
 	g_wasi_nn_functions.run_inference = (run_inference_fn)dlsym(g_wasi_nn_functions.handle, "run_inference");
     if (!g_wasi_nn_functions.init_backend ||!g_wasi_nn_functions.deinit_backend  ||
-       !g_wasi_nn_functions.init_execution_context ||!g_wasi_nn_functions.set_input ||!g_wasi_nn_functions.compute ||
+       !g_wasi_nn_functions.init_execution_context ||!g_wasi_nn_functions.close_execution_context ||
+       !g_wasi_nn_functions.set_input ||!g_wasi_nn_functions.compute ||
        !g_wasi_nn_functions.get_output	||!g_wasi_nn_functions.load_by_name_with_config ||!g_wasi_nn_functions.run_inference) {
         dlclose(g_wasi_nn_functions.handle);
         return 1;
@@ -137,20 +140,47 @@ static ERL_NIF_TERM nif_init_execution_context(ErlNifEnv* env, int argc, const E
 {
 	DRV_DEBUG("Init context Start \n" );
     LlamaContext* ctx;
+    char session_id[256];
+    
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args_init_execution"));
     }
+    
+    if (!enif_get_string(env, argv[1], session_id, sizeof(session_id), ERL_NIF_LATIN1)) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_session_id"));
+    }
 
-    if (g_wasi_nn_functions.init_execution_context(ctx->ctx, ctx->g, &ctx->exec_ctx)!= success) {
+    if (g_wasi_nn_functions.init_execution_context(ctx->ctx, session_id, &ctx->exec_ctx)!= success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "init_execution_failed"));
     }
-	DRV_DEBUG("Init context finished \n" );
-	return enif_make_atom(env, "ok");
+	DRV_DEBUG("Init context finished for session: %s\n", session_id);
+	return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_ulong(env, ctx->exec_ctx));
+}
+
+static ERL_NIF_TERM nif_close_execution_context(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    LlamaContext* ctx;
+    unsigned long exec_ctx_id;
+    
+    if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+    }
+    
+    if (!enif_get_ulong(env, argv[1], &exec_ctx_id)) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_exec_ctx"));
+    }
+
+    if (g_wasi_nn_functions.close_execution_context(ctx->ctx, (graph_execution_context)exec_ctx_id) != success) {
+        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "close_execution_failed"));
+    }
+    
+    return enif_make_atom(env, "ok");
 }
 static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
 	DRV_DEBUG("Start to run_inference \n" );
 	LlamaContext* ctx;
+    unsigned long exec_ctx_id;
     char *input = NULL;
     tensor_data output;
     ERL_NIF_TERM ret_term; // Variable for the return term
@@ -168,24 +198,30 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
     }
 	// Get the context from the first argument
 	if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
-        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+        ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
+        goto cleanup;
     }
-	//Get input
-	if (!enif_get_string(env, argv[1], input, MAX_INPUT_SIZE, ERL_NIF_LATIN1)) {
+    
+    // Get the execution context ID from the second argument
+    if (!enif_get_ulong(env, argv[1], &exec_ctx_id)) {
+        ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_exec_ctx"));
+        goto cleanup;
+    }
+    
+	//Get input from the third argument
+	if (!enif_get_string(env, argv[2], input, MAX_INPUT_SIZE, ERL_NIF_LATIN1)) {
 		DRV_DEBUG("Invalid input\n");
         ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_input"));
         goto cleanup;
 	}
-	// Prepare tensor dimensions
-	
 
     tensor input_tensor = {
 		.dimensions = NULL,
 		.type =  fp32,
         .data = (tensor_data)input,
     };
-    // Run inference
-    if (g_wasi_nn_functions.run_inference(ctx->ctx, ctx->exec_ctx, 0, &input_tensor, output, &output_size) != success) {
+    // Run inference with session-specific execution context
+    if (g_wasi_nn_functions.run_inference(ctx->ctx, (graph_execution_context)exec_ctx_id, 0, &input_tensor, output, &output_size, NULL) != success) {
         ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "run_inference_failed"));
         goto cleanup;
     }
@@ -238,9 +274,10 @@ static ERL_NIF_TERM nif_deinit_backend(ErlNifEnv* env, int argc, const ERL_NIF_T
 static ErlNifFunc nif_funcs[] = {
     {"init_backend", 0, nif_init_backend},
     {"load_by_name_with_config", 3, nif_load_by_name_with_config},
-    {"init_execution_context", 1, nif_init_execution_context},
+    {"init_execution_context", 2, nif_init_execution_context},
+    {"close_execution_context", 2, nif_close_execution_context},
 	{"deinit_backend", 1, nif_deinit_backend},
-	{"run_inference", 2, nif_run_inference},
+	{"run_inference", 3, nif_run_inference},
 };
 
 

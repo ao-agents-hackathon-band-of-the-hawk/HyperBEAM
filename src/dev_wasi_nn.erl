@@ -28,20 +28,21 @@ info(_Msg1, _Msg2, _Opts) ->
     {ok, InfoBody}.
 
 infer(_M1, M2, Opts) ->
-    % Get Arweave TX ID for the model
+    % Extract parameters
     TxID = hb_ao:get(<<"model-id">>, M2, undefined, Opts),
     ModelConfig = hb_ao:get(<<"config">>, M2, "{\"n_gpu_layers\":48,\"ctx_size\":64000}", Opts),
     Prompt = hb_ao:get(<<"prompt">>, M2, Opts),
+    SessionId = hb_ao:get(<<"session-id">>, M2, undefined, Opts),
     
     case TxID of
         undefined ->
             % Fallback to original behavior if no TX ID provided
-            load_and_infer("test/qwen2.5-14b-instruct-q2_k.gguf", ModelConfig, Prompt, Opts);
+            load_and_infer("test/qwen2.5-14b-instruct-q2_k.gguf", ModelConfig, Prompt, SessionId, Opts);
         _ ->
             % Download model from Arweave using TX ID
             case download_and_store_model(TxID, Opts) of
                 {ok, LocalModelPath} ->
-                    load_and_infer(LocalModelPath, ModelConfig, Prompt, Opts);
+                    load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
                 {error, Reason} ->
                     {error, {model_download_failed, Reason}}
             end
@@ -121,21 +122,54 @@ download_and_store_model(TxID, Opts) ->
             end
     end.
 
-%% @doc Load model and perform inference
-load_and_infer(ModelPath, ModelConfig, Prompt, Opts) ->
-    case dev_wasi_nn_nif:load_by_name_with_config_once(undefined, ModelPath, ModelConfig) of
-        {ok, Context} ->
-            case dev_wasi_nn_nif:init_execution_context_once(Context) of
-                ok ->
-                    case dev_wasi_nn_nif:run_inference(Context, binary_to_list(Prompt)) of
-                        {ok, Output} ->
-                            {ok, Output};
-                        {error, Reason} ->
-                            {error, Reason}
-                    end;
-                {error, Reason2} ->
-                    {error, Reason2}
-            end;
-        {error, Reason3} ->
-            {error, Reason3}
+%% @doc Load model and perform inference using persistent context management with session support
+load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
+    % Use provided session ID or generate a new one
+    SessionId = case ProvidedSessionId of
+        undefined -> generate_session_id(Opts);
+        _ -> binary_to_list(ProvidedSessionId)
+    end,
+    
+    try
+        % Use persistent context management (fast if model already loaded)
+        case dev_wasi_nn_nif:switch_model(ModelPath, ModelConfig) of
+            {ok, Context} ->
+                % Create or reuse session-specific execution context
+                case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of
+                    {ok, ExecContextId} ->
+                        % Run inference with session-specific context
+                        case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt)) of
+                            {ok, Output} ->
+                                % No automatic cleanup - let session persist for conversation continuity
+                                ?event({inference_success, SessionId, ModelPath, context_preserved}, Opts),
+                                {ok, #{
+                                    <<"response">> => list_to_binary(Output),
+                                    <<"session-id">> => list_to_binary(SessionId)
+                                }};
+                            {error, Reason} ->
+                                ?event({inference_failed, SessionId, Reason}, Opts),
+                                {error, Reason}
+                        end;
+                    {error, Reason2} ->
+                        ?event({session_init_failed, SessionId, Reason2}, Opts),
+                        {error, Reason2}
+                end;
+            {error, Reason3} ->
+                ?event({model_load_failed, SessionId, ModelPath, Reason3}, Opts),
+                {error, Reason3}
+        end
+    catch
+        Error:Exception ->
+            ?event({inference_exception, SessionId, Error, Exception}, Opts),
+            {error, {exception, Error, Exception}}
     end.
+
+%% @doc Generate a unique session ID for each request
+generate_session_id(_Opts) ->
+    % Use a combination of timestamp and random number for uniqueness
+    Timestamp = erlang:system_time(microsecond),
+    Random = rand:uniform(999999),
+    % Include process info to help with debugging
+    Pid = self(),
+    SessionId = io_lib:format("req_~p_~p_~p", [Timestamp, Random, Pid]),
+    lists:flatten(SessionId).
