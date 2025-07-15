@@ -37,7 +37,7 @@ infer(_M1, M2, Opts) ->
     case TxID of
         undefined ->
             % Fallback to original behavior if no TX ID provided
-            load_and_infer("test/qwen2.5-14b-instruct-q2_k.gguf", ModelConfig, Prompt, SessionId, Opts);
+            load_and_infer("model/qwen2.5-14b-instruct-q2_k.gguf", ModelConfig, Prompt, SessionId, Opts);
         _ ->
             % Download model from Arweave using TX ID
             case download_and_store_model(TxID, Opts) of
@@ -63,7 +63,7 @@ download_and_store_model(TxID, Opts) ->
     case hb_store:read(StoreConfig, binary_to_list(ModelFileName)) of
         {ok, _ExistingData} ->
             % File already exists locally, no need to download
-            ?event({model_already_exists, TxID, LocalPath}, Opts),
+            ?event(dev_wasi_nn, {model_already_exists, TxID, LocalPath}),
             {ok, binary_to_list(LocalPath)};
         not_found ->
             % File doesn't exist, proceed with download
@@ -77,24 +77,24 @@ download_and_store_model(TxID, Opts) ->
                         case hb_store:write(StoreConfig, ModelFileName, ModelData) of
                             ok ->
                                 % Return the local file path
-                                ?event({model_downloaded, TxID, LocalPath}, Opts),
+                                ?event(dev_wasi_nn, {model_downloaded, TxID, LocalPath}),
                                 {ok, binary_to_list(LocalPath)};
                             StoreError ->
-                                ?event({model_store_failed, TxID, StoreError}, Opts),
+                                ?event(dev_wasi_nn, {model_store_failed, TxID, StoreError}),
                                 {error, {store_failed, StoreError}}
                         end;
                     {error, DownloadError} ->
-                        ?event({model_download_failed, TxID, DownloadError}, Opts),
+                        ?event(dev_wasi_nn, {model_download_failed, TxID, DownloadError}),
                         {error, {download_failed, DownloadError}}
                 end
             catch
                 Error:Reason ->
-                    ?event({model_download_exception, TxID, Error, Reason}, Opts),
+                    ?event(dev_wasi_nn, {model_download_exception, TxID, Error, Reason}),
                     {error, {exception, Error, Reason}}
             end;
         {error, ReadError} ->
             % Error reading from storage, log and proceed with download
-            ?event({model_read_error, TxID, ReadError}, Opts),
+            ?event(dev_wasi_nn, {model_read_error, TxID, ReadError}),
             try
                 % Download data from Arweave using the TX ID
                 case hb_gateway_client:data(TxID, #{
@@ -105,19 +105,19 @@ download_and_store_model(TxID, Opts) ->
                         case hb_store:write(StoreConfig, ModelFileName, ModelData) of
                             ok ->
                                 % Return the local file path
-                                ?event({model_downloaded, TxID, LocalPath}, Opts),
+                                ?event(dev_wasi_nn, {model_downloaded, TxID, LocalPath}),
                                 {ok, binary_to_list(LocalPath)};
                             StoreError ->
-                                ?event({model_store_failed, TxID, StoreError}, Opts),
+                                ?event(dev_wasi_nn, {model_store_failed, TxID, StoreError}),
                                 {error, {store_failed, StoreError}}
                         end;
                     {error, DownloadError} ->
-                        ?event({model_download_failed, TxID, DownloadError}, Opts),
+                        ?event(dev_wasi_nn, {model_download_failed, TxID, DownloadError}),
                         {error, {download_failed, DownloadError}}
                 end
             catch
                 Error:Reason ->
-                    ?event({model_download_exception, TxID, Error, Reason}, Opts),
+                    ?event(dev_wasi_nn, {model_download_exception, TxID, Error, Reason}),
                     {error, {exception, Error, Reason}}
             end
     end.
@@ -140,27 +140,25 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
                         % Run inference with session-specific context
                         case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt)) of
                             {ok, Output} ->
-                                % No automatic cleanup - let session persist for conversation continuity
-                                ?event({inference_success, SessionId, ModelPath, context_preserved}, Opts),
                                 {ok, #{
-                                    <<"response">> => list_to_binary(Output),
+                                    <<"result">> => hb_util:encode(Output),
                                     <<"session-id">> => list_to_binary(SessionId)
                                 }};
                             {error, Reason} ->
-                                ?event({inference_failed, SessionId, Reason}, Opts),
+                                ?event(dev_wasi_nn, {inference_failed, SessionId, Reason}),
                                 {error, Reason}
                         end;
                     {error, Reason2} ->
-                        ?event({session_init_failed, SessionId, Reason2}, Opts),
+                        ?event(dev_wasi_nn, {session_init_failed, SessionId, Reason2}),
                         {error, Reason2}
                 end;
             {error, Reason3} ->
-                ?event({model_load_failed, SessionId, ModelPath, Reason3}, Opts),
+                ?event(dev_wasi_nn, {model_load_failed, SessionId, ModelPath, Reason3}),
                 {error, Reason3}
         end
     catch
         Error:Exception ->
-            ?event({inference_exception, SessionId, Error, Exception}, Opts),
+            ?event(dev_wasi_nn, {inference_exception, SessionId, Error, Exception}),
             {error, {exception, Error, Exception}}
     end.
 

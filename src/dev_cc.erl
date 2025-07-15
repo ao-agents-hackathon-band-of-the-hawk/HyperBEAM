@@ -64,9 +64,11 @@ verify(_M1, M2, NodeOpts) ->
     maybe
         % Ensure Python environment is ready
         {ok, _} ?= ensure_python_environment(),
+        ?event(dev_cc, {verify, M2}),
         {ok, TokenJSON} ?= extract_token_from_message(M2, NodeOpts),
         % Extract nonce for verification
         Nonce = hb_ao:get(<<"nonce">>, M2, ?TEST_MOCK_NONCE, NodeOpts),
+        ?event(dev_cc, {verify_token, TokenJSON, Nonce}),
         % Verify the GPU attestation token
         {ok, TokenResult} ?= verify_token(TokenJSON, Nonce),
         case TokenResult of
@@ -133,9 +135,11 @@ verify_token(TokenJSON, Nonce) ->
                 #{<<"valid">> := false} ->
                     {ok, false};
                 _ ->
+                    ?event(dev_cc, {invalid_verify_result, VerifyResult}),
                     {error, invalid_verify_result}
             end;
         {error, Error} ->
+            ?event(dev_cc, {verify_token_failed, TokenJSON, Error}),
             {error, Error}
     end.
 
