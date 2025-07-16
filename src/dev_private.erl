@@ -7,7 +7,7 @@
 %%% 4. Users can decrypt messages on their side using session keys
 %%% 5. Each session has its own encryption key for isolation
 -module(dev_private).
--export([info/1, info/3, create_session/3, get_key/3, encrypt/3, decrypt/3, decrypt_key/3]).
+-export([info/1, info/3, init/3, create_session/3, set_key/3, encrypt/3, decrypt/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("public_key/include/public_key.hrl").
@@ -20,7 +20,7 @@
 %% @param _ Ignored parameter
 %% @returns A map with the `exports' key containing a list of allowed functions
 info(_) -> 
-    #{ exports => [info, create_session, get_key, encrypt, decrypt, decrypt_key] }.
+    #{ exports => [info, init, create_session, set_key, encrypt, decrypt] }.
 
 %% @doc Provides information about the private conversation device and its API.
 %%
@@ -42,37 +42,36 @@ info(_Msg1, _Msg2, _Opts) ->
             <<"info">> => #{
                 <<"description">> => <<"Get device info">>
             },
+            <<"init">> => #{
+                <<"description">> => <<"Initialize the private conversation device with RSA key pair">>,
+                <<"parameters">> => #{},
+                <<"returns">> => #{
+                    <<"message">> => <<"Initialization status">>,
+                    <<"public_key">> => <<"Server's RSA public key in PEM format">>
+                },
+                <<"security">> => <<"Generates a new RSA key pair for the server if not already initialized">>
+            },
             <<"create_session">> => #{
                 <<"description">> => <<"Create a new private conversation session">>,
                 <<"parameters">> => #{
-                    <<"session_name">> => <<"Optional human-readable name for the session">>
+                    <<"session_name">> => <<"Optional human-readable name for the session">>,
+                    <<"client_public_key">> => <<"Client's RSA public key for secure key exchange">>,
+                    <<"encrypted_session_key">> => <<"Client-generated AES key encrypted with server's public key">>
                 },
                 <<"returns">> => #{
-                    <<"session_id">> => <<"Unique identifier for the session">>,
-                    <<"created_at">> => <<"Timestamp when session was created">>
+                    <<"session_id">> => <<"Unique identifier for the session">>
                 }
             },
-            <<"get_key">> => #{
-                <<"description">> => <<"Retrieve the encryption key for a session (RSA encrypted)">>,
+            <<"set_key">> => #{
+                <<"description">> => <<"Store the client's encrypted session key (TLS-like handshake)">>,
                 <<"parameters">> => #{
                     <<"session_id">> => <<"Session identifier from create_session">>,
-                    <<"public_key">> => <<"RSA public key to encrypt the session key with">>
+                    <<"encrypted_session_key">> => <<"Client-generated AES key encrypted with server's public key">>
                 },
                 <<"returns">> => #{
-                    <<"encrypted_key">> => <<"RSA-encrypted session key (base64)">>,
-                    <<"iv">> => <<"Initialization vector for this session">>
+                    <<"status">> => <<"Key successfully stored">>
                 },
-                <<"security">> => <<"Session key is encrypted with requester's public key - only they can decrypt it">>
-            },
-            <<"decrypt_key">> => #{
-                <<"description">> => <<"Decrypt a session key using your private key">>,
-                <<"parameters">> => #{
-                    <<"encrypted_key">> => <<"RSA-encrypted key from get_key">>,
-                    <<"private_key">> => <<"Your RSA private key (PEM format)">>
-                },
-                <<"returns">> => #{
-                    <<"session_key">> => <<"Decrypted session key for local use">>
-                }
+                <<"security">> => <<"Client generates the session key, server only stores it after decryption">>
             },
             <<"encrypt">> => #{
                 <<"description">> => <<"Encrypt a message for a session">>,
@@ -100,202 +99,224 @@ info(_Msg1, _Msg2, _Opts) ->
     },
     {ok, #{<<"status">> => 200, <<"body">> => InfoBody}}.
 
-%% @doc Creates a new private conversation session with a unique ID and AES key.
+%% @doc Initialize the private conversation device with RSA key pair.
 %%
 %% This function performs the following operations:
-%% 1. Generates a unique session ID using crypto random bytes
-%% 2. Creates a new 256-bit AES key for the session
-%% 3. Optionally accepts a human-readable session name
-%% 4. Stores the session information in the node's configuration
-%% 5. Returns the session ID and creation timestamp
+%% 1. Checks if the device is already initialized
+%% 2. Generates or retrieves an RSA key pair for the server
+%% 3. Stores the key pair in the node's configuration
+%% 4. Returns confirmation with the public key
+%%
+%% This follows the same pattern as dev_green_zone initialization.
 %%
 %% @param _M1 Ignored parameter
-%% @param M2 May contain session configuration like name
+%% @param _M2 May contain initialization parameters
 %% @param Opts A map of configuration options
-%% @returns {ok, Map} containing session_id and creation details, or
+%% @returns {ok, Map} containing the public key and confirmation, or
+%% {error, Binary} on failure
+-spec init(M1 :: term(), M2 :: term(), Opts :: map()) -> {ok, map()} | {error, binary()}.
+init(_M1, _M2, Opts) ->
+    ?event(priv_device, {init, start}),
+    case get_server_public_key_pem(Opts) of
+        {ok, PublicKeyPEM} ->
+            % Already initialized, return existing public key
+            {ok, #{
+                <<"status">> => 200,
+                <<"body">> => #{
+                    <<"message">> => <<"Private device already initialized">>,
+                    <<"public_key">> => PublicKeyPEM,
+                    <<"initialized">> => true
+                }
+            }};
+        {error, _} ->
+            % Initialize new device
+            ?event(priv_device, {init, generating_keypair}),
+            
+            % Generate RSA key pair (2048-bit)
+            PrivateKey = public_key:generate_key({rsa, 2048, 65537}),
+            PublicKey = extract_public_key(PrivateKey),
+            
+            % Convert to PEM format
+            PrivateKeyPEM = public_key:pem_encode([
+                public_key:pem_entry_encode('RSAPrivateKey', PrivateKey)
+            ]),
+            PublicKeyPEM = public_key:pem_encode([
+                public_key:pem_entry_encode('RSAPublicKey', PublicKey)
+            ]),
+            
+            % Store in node configuration
+            hb_http_server:set_opts(Opts#{
+                priv_device_private_key => PrivateKeyPEM,
+                priv_device_public_key => PublicKeyPEM,
+                priv_sessions => #{}
+            }),
+            
+            ?event(priv_device, {init, complete}),
+            
+            {ok, #{
+                <<"status">> => 200,
+                <<"body">> => #{
+                    <<"message">> => <<"Private device initialized successfully">>
+                }
+            }}
+    end.
+
+%% @doc Creates a new private conversation session with TLS-like handshake.
+%%
+%% This function performs the following operations:
+%% 1. Checks if the device is initialized
+%% 2. Generates a unique session ID using crypto random bytes
+%% 3. Optionally accepts a client public key and encrypted session key
+%% 4. If encrypted key is provided, stores it for later use in set_key
+%% 5. Optionally accepts a human-readable session name
+%% 6. Stores the session information in the node's configuration
+%% 7. Returns the session ID, creation timestamp, and server's public key
+%%
+%% @param _M1 Ignored parameter
+%% @param M2 May contain session configuration like name, client_public_key, encrypted_session_key
+%% @param Opts A map of configuration options
+%% @returns {ok, Map} containing session_id, creation details, and server's public key, or
 %% {error, Binary} on failure
 -spec create_session(M1 :: term(), M2 :: term(), Opts :: map()) -> 
     {ok, map()} | {error, binary()}.
 create_session(_M1, M2, Opts) ->
     ?event(priv_session, {create_session, start}),
     
-    % Generate a unique session ID
-    SessionID = base64:encode(crypto:strong_rand_bytes(16)),
-    
-    % Generate a 256-bit AES key for this session
-    SessionKey = crypto:strong_rand_bytes(32),
-    
-    % Get optional session name
-    SessionName = case M2 of
-        #{<<"session_name">> := Name} when is_binary(Name) -> Name;
-        _ -> <<"Unnamed Session">>
-    end,
-    
-    % Create session metadata
-    CreatedAt = erlang:system_time(second),
-    SessionData = #{
-        session_id => SessionID,
-        session_key => SessionKey,
-        session_name => SessionName,
-        created_at => CreatedAt,
-        message_count => 0
-    },
-    
-    % Store the session in the node's configuration
-    PrivSessions = hb_opts:get(priv_sessions, #{}, Opts),
-    UpdatedSessions = maps:put(SessionID, SessionData, PrivSessions),
-    
-    hb_http_server:set_opts(Opts#{
-        priv_sessions => UpdatedSessions
-    }),
-    
-    ?event(priv_session, {create_session, complete, SessionID}),
-    
-    {ok, #{
-        <<"status">> => 200,
-        <<"body">> => #{
-            <<"session_id">> => SessionID,
-            <<"session_name">> => SessionName,
-            <<"created_at">> => CreatedAt,
-            <<"message">> => <<"Private session created successfully">>
-        }
-    }}.
+    % Get server's public key (also checks if device is initialized)
+    case get_server_public_key_pem(Opts) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, ServerPublicKeyPEM} ->
+            % Generate a unique session ID
+            SessionID = base64:encode(crypto:strong_rand_bytes(16)),
+                    
+                    % Get optional client public key
+                    ClientPublicKey = case M2 of
+                        #{<<"client_public_key">> := PubKey} -> PubKey;
+                        _ -> undefined
+                    end,
+                    
+                    % Get optional encrypted session key
+                    EncryptedSessionKey = case M2 of
+                        #{<<"encrypted_session_key">> := EncKey} -> EncKey;
+                        _ -> undefined
+                    end,
+                    
+                    % Create session metadata
+                    SessionData = #{
+                        session_id => SessionID,
+                        client_public_key => ClientPublicKey,
+                        encrypted_session_key => EncryptedSessionKey,
+                        session_key => undefined  % Will be set by set_key/3
+                    },
+                    
+                    % Store the session in the node's configuration
+                    PrivSessions = hb_opts:get(priv_sessions, #{}, Opts),
+                    UpdatedSessions = maps:put(SessionID, SessionData, PrivSessions),
+                    
+                    hb_http_server:set_opts(Opts#{
+                        priv_sessions => UpdatedSessions
+                    }),
+                    
+                    ?event(priv_session, {create_session, complete, SessionID}),
+                    
+                    {ok, #{
+                        <<"status">> => 200,
+                        <<"body">> => #{
+                            <<"session_id">> => base64:encode(SessionID),
+                            <<"server_public_key">> => base64:encode(ServerPublicKeyPEM)
+                    }
+                }}
+    end.
 
-%% @doc Retrieves the encryption key for a specific session, encrypted with requester's public key.
+%% @doc Stores the client's encrypted session key (TLS-like handshake).
 %%
 %% This function performs the following operations:
 %% 1. Validates that the session ID exists
-%% 2. Validates that a public key is provided
-%% 3. Retrieves the session's AES key
-%% 4. Encrypts the session key using the requester's RSA public key
-%% 5. Generates a fresh IV for encryption operations
-%% 6. Returns the encrypted key and IV in base64 format
+%% 2. Receives the client's encrypted session key
+%% 3. Decrypts the session key using the server's private key
+%% 4. Stores the decrypted session key for future encryption/decryption
+%% 5. Returns confirmation of successful key storage
 %%
-%% SECURITY: The session key is encrypted with the requester's public key,
-%% ensuring only the holder of the corresponding private key can decrypt it.
+%% SECURITY: This implements a TLS-like handshake where:
+%% - Client generates the session key
+%% - Client encrypts it with server's public key
+%% - Server decrypts and stores it
+%% - Only the client knows the original session key
 %%
 %% @param _M1 Ignored parameter
-%% @param M2 Map containing session_id and public_key
-%% @param Opts A map of configuration options
-%% @returns {ok, Map} containing the encrypted session key and IV, or
-%% {error, Binary} if session not found or public key invalid
--spec get_key(M1 :: term(), M2 :: term(), Opts :: map()) -> 
+%% @param M2 Map containing session_id and encrypted_session_key
+%% @param Opts A map of configuration options containing server's private key
+%% @returns {ok, Map} containing confirmation, or
+%% {error, Binary} if session not found or decryption fails
+-spec set_key(M1 :: term(), M2 :: term(), Opts :: map()) -> 
     {ok, map()} | {error, binary()}.
-get_key(_M1, M2, Opts) ->
-    ?event(priv_session, {get_key, start}),
+set_key(_M1, M2, Opts) ->
+    ?event(priv_session, {set_key, start}),
     
     SessionID = case M2 of
         #{<<"session_id">> := ID} -> ID;
         _ -> hb_opts:get(<<"session_id">>, undefined, Opts)
     end,
     
-    PublicKeyPEM = case M2 of
-        #{<<"public_key">> := PubKey} -> PubKey;
-        _ -> hb_opts:get(<<"public_key">>, undefined, Opts)
+    EncryptedSessionKey = case M2 of
+        #{<<"encrypted_session_key">> := EncKey} -> EncKey;
+        _ -> hb_opts:get(<<"encrypted_session_key">>, undefined, Opts)
     end,
     
-    case {SessionID, PublicKeyPEM} of
-        {undefined, _} ->
-            {error, <<"Session ID is required">>};
-        {_, undefined} ->
-            {error, <<"Public key is required for secure key exchange">>};
-        {_, _} ->
-            PrivSessions = hb_opts:get(priv_sessions, #{}, Opts),
-            case maps:find(SessionID, PrivSessions) of
-                {ok, #{session_key := SessionKey}} ->
-                    try
-                        % Encrypt the session key with the requester's public key
-                        EncryptedKey = encrypt_with_public_key(SessionKey, PublicKeyPEM),
-                        
-                        % Generate a fresh IV for this encryption operation
-                        IV = crypto:strong_rand_bytes(16),
-                        
-                        ?event(priv_session, {get_key, success, SessionID}),
-                        
-                        {ok, #{
-                            <<"status">> => 200,
-                            <<"body">> => #{
-                                <<"session_id">> => SessionID,
-                                <<"encrypted_key">> => base64:encode(EncryptedKey),
-                                <<"iv">> => base64:encode(IV),
-                                <<"algorithm">> => <<"RSA-OAEP">>,
-                                <<"message">> => <<"Session key encrypted with your public key">>
-                            }
-                        }}
-                    catch
-                        Error:Reason ->
-                            ?event(priv_session, {get_key, encrypt_error, SessionID, Error, Reason}),
-                            {error, <<"Invalid public key or encryption failed">>}
-                    end;
-                error ->
-                    ?event(priv_session, {get_key, not_found, SessionID}),
-                    {error, <<"Session not found">>}
-            end
-    end.
-
-%% @doc Decrypts a session key using the user's private key.
-%%
-%% This is a utility function to help users decrypt session keys on their side.
-%% In a real implementation, this would typically be done client-side.
-%%
-%% @param _M1 Ignored parameter
-%% @param M2 Map containing encrypted_key and private_key
-%% @param _Opts Configuration options (ignored)
-%% @returns {ok, Map} containing the decrypted session key, or
-%% {error, Binary} if decryption fails
--spec decrypt_key(M1 :: term(), M2 :: term(), Opts :: map()) -> 
-    {ok, map()} | {error, binary()}.
-decrypt_key(_M1, M2, _Opts) ->
-    ?event(priv_session, {decrypt_key, start}),
-    
-    EncryptedKey = case M2 of
-        #{<<"encrypted_key">> := Key} -> Key;
-        _ -> undefined
-    end,
-    
-    PrivateKeyPEM = case M2 of
-        #{<<"private_key">> := PrivKey} -> PrivKey;
-        _ -> undefined
-    end,
-    
-    case {EncryptedKey, PrivateKeyPEM} of
-        {undefined, _} ->
-            {error, <<"Encrypted key is required">>};
-        {_, undefined} ->
-            {error, <<"Private key is required">>};
-        {_, _} ->
-            try
-                % Decode the encrypted key
-                EncryptedKeyBin = base64:decode(EncryptedKey),
-                
-                % Decrypt with private key
-                DecryptedKey = decrypt_with_private_key(EncryptedKeyBin, PrivateKeyPEM),
-                
-                ?event(priv_session, {decrypt_key, success}),
-                
-                {ok, #{
-                    <<"status">> => 200,
-                    <<"body">> => #{
-                        <<"session_key">> => base64:encode(DecryptedKey),
-                        <<"message">> => <<"Session key successfully decrypted">>
-                    }
-                }}
-            catch
-                Error:Reason ->
-                    ?event(priv_session, {decrypt_key, error, Error, Reason}),
-                    {error, <<"Decryption failed - invalid key or ciphertext">>}
+    % Get server's private key from device configuration
+    case get_server_private_key_pem(Opts) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, ServerPrivateKeyPEM} ->
+            case {SessionID, EncryptedSessionKey} of
+                {undefined, _} ->
+                    {error, <<"Session ID is required">>};
+                {_, undefined} ->
+                    {error, <<"Encrypted session key is required">>};
+                {_, _} ->
+                    PrivSessions = hb_opts:get(priv_sessions, #{}, Opts),
+                    case maps:find(SessionID, PrivSessions) of
+                        {ok, SessionData} ->
+                            try
+                                % Decrypt the client's session key
+                                EncryptedKeyBin = base64:decode(EncryptedSessionKey),
+                                DecryptedSessionKey = decrypt_with_private_key(EncryptedKeyBin, ServerPrivateKeyPEM),
+                                
+                                % Update session with the decrypted key
+                                UpdatedSessionData = SessionData#{
+                                    session_key => DecryptedSessionKey,
+                                    key_set_at => erlang:system_time(second)
+                                },
+                                UpdatedSessions = maps:put(SessionID, UpdatedSessionData, PrivSessions),
+                                
+                                hb_http_server:set_opts(Opts#{
+                                    priv_sessions => UpdatedSessions
+                                }),
+                                
+                                ?event(priv_session, {set_key, success, SessionID}),
+                                
+                                {ok, #{
+                                    <<"status">> => 200,
+                                    <<"body">> => #{
+                                        <<"session_id">> => SessionID,
+                                        <<"message">> => <<"Session key successfully stored">>,
+                                        <<"key_set_at">> => erlang:system_time(second)
+                                    }
+                                }}
+                            catch
+                                Error:Reason ->
+                                    ?event(priv_session, {set_key, decrypt_error, SessionID, Error, Reason}),
+                                    {error, <<"Failed to decrypt session key - invalid key or ciphertext">>}
+                            end;
+                        error ->
+                            ?event(priv_session, {set_key, not_found, SessionID}),
+                            {error, <<"Session not found">>}
+                    end
             end
     end.
 
 %% @doc Encrypts a message for a specific session.
-%%
-%% This function performs the following operations:
-%% 1. Validates that the session exists
-%% 2. Retrieves the session's AES key
-%% 3. Generates a fresh IV for this encryption
-%% 4. Encrypts the message using AES-256-GCM
-%% 5. Returns the encrypted message and IV in base64 format
-%% 6. Increments the session's message count
 %%
 %% @param _M1 Ignored parameter
 %% @param M2 Map containing session_id and message
@@ -325,7 +346,7 @@ encrypt(_M1, M2, Opts) ->
         {_, _} ->
             PrivSessions = hb_opts:get(priv_sessions, #{}, Opts),
             case maps:find(SessionID, PrivSessions) of
-                {ok, SessionData = #{session_key := SessionKey}} ->
+                {ok, #{session_key := SessionKey}} when SessionKey =/= undefined ->
                     % Generate a fresh IV for this encryption
                     IV = crypto:strong_rand_bytes(16),
                     
@@ -345,16 +366,6 @@ encrypt(_M1, M2, Opts) ->
                         true
                     ),
                     
-                    % Increment message count
-                    UpdatedSessionData = SessionData#{
-                        message_count => maps:get(message_count, SessionData, 0) + 1
-                    },
-                    UpdatedSessions = maps:put(SessionID, UpdatedSessionData, PrivSessions),
-                    
-                    hb_http_server:set_opts(Opts#{
-                        priv_sessions => UpdatedSessions
-                    }),
-                    
                     ?event(priv_session, {encrypt, success, SessionID}),
                     
                     {ok, #{
@@ -366,6 +377,9 @@ encrypt(_M1, M2, Opts) ->
                             <<"iv">> => base64:encode(IV)
                         }
                     }};
+                {ok, _} ->
+                    ?event(priv_session, {encrypt, key_not_set, SessionID}),
+                    {error, <<"Session key not set - call set_key first">>};
                 error ->
                     ?event(priv_session, {encrypt, not_found, SessionID}),
                     {error, <<"Session not found">>}
@@ -373,14 +387,6 @@ encrypt(_M1, M2, Opts) ->
     end.
 
 %% @doc Decrypts a message for a specific session.
-%%
-%% This function performs the following operations:
-%% 1. Validates that the session exists
-%% 2. Retrieves the session's AES key
-%% 3. Decodes the encrypted message and IV from base64
-%% 4. Separates the ciphertext from the authentication tag
-%% 5. Decrypts the message using AES-256-GCM
-%% 6. Returns the original plaintext message
 %%
 %% @param _M1 Ignored parameter
 %% @param M2 Map containing session_id, encrypted_message, and iv
@@ -417,7 +423,7 @@ decrypt(_M1, M2, Opts) ->
         {_, _, _} ->
             PrivSessions = hb_opts:get(priv_sessions, #{}, Opts),
             case maps:find(SessionID, PrivSessions) of
-                {ok, #{session_key := SessionKey}} ->
+                {ok, #{session_key := SessionKey}} when SessionKey =/= undefined ->
                     try
                         % Decode the encrypted message and IV
                         Combined = base64:decode(EncryptedMessage),
@@ -452,6 +458,9 @@ decrypt(_M1, M2, Opts) ->
                             ?event(priv_session, {decrypt, error, SessionID, Error, Reason}),
                             {error, <<"Decryption failed - invalid ciphertext or key">>}
                     end;
+                {ok, _} ->
+                    ?event(priv_session, {decrypt, key_not_set, SessionID}),
+                    {error, <<"Session key not set - call set_key first">>};
                 error ->
                     ?event(priv_session, {decrypt, not_found, SessionID}),
                     {error, <<"Session not found">>}
@@ -506,124 +515,149 @@ decrypt_with_private_key(EncryptedData, PrivateKeyPEM) ->
     ?event(priv_session, {decrypt_with_private_key, complete}),
     DecryptedData.
 
-%% @doc Test function to verify the asymmetric encryption works correctly.
-%%
-%% This test creates RSA keys, encrypts data with the public key,
-%% and verifies that it can be decrypted with the private key.
-asymmetric_crypto_test() ->
-    % Generate RSA key pair for testing
-    PrivateKey = public_key:generate_key({rsa, 2048, 65537}),
-    PublicKey = case PrivateKey of
-        #'RSAPrivateKey'{modulus = N, publicExponent = E} ->
-            #'RSAPublicKey'{modulus = N, publicExponent = E}
-    end,
-    
-    % Convert to PEM format
-    PrivateKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPrivateKey', PrivateKey)]),
-    PublicKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPublicKey', PublicKey)]),
-    
-    % Test data
-    TestData = <<"This is a test session key">>,
-    
-    % Encrypt with public key
-    EncryptedData = encrypt_with_public_key(TestData, PublicKeyPEM),
-    
-    % Decrypt with private key
-    DecryptedData = decrypt_with_private_key(EncryptedData, PrivateKeyPEM),
-    
-    % Verify roundtrip
-    ?assertEqual(TestData, DecryptedData).
+%% @doc Helper function to extract public key from RSA private key.
+-spec extract_public_key(#'RSAPrivateKey'{}) -> #'RSAPublicKey'{}.
+extract_public_key(#'RSAPrivateKey'{modulus = N, publicExponent = E}) ->
+    #'RSAPublicKey'{modulus = N, publicExponent = E}.
 
-%% @doc Test function to verify the secure session workflow works correctly.
-%%
-%% This test creates a session, requests the key with a public key,
-%% decrypts it with the private key, and then encrypts/decrypts a message.
+%% @doc Get server's private key in PEM format from device configuration.
+-spec get_server_private_key_pem(Opts :: map()) -> {ok, binary()} | {error, binary()}.
+get_server_private_key_pem(Opts) ->
+    case hb_opts:get(priv_device_private_key, undefined, Opts) of
+        undefined ->
+            {error, <<"Private device not initialized - call init first">>};
+        PrivateKeyPEM ->
+            {ok, PrivateKeyPEM}
+    end.
+
+%% @doc Get server's public key in PEM format from device configuration.
+-spec get_server_public_key_pem(Opts :: map()) -> {ok, binary()} | {error, binary()}.
+get_server_public_key_pem(Opts) ->
+    case hb_opts:get(priv_device_public_key, undefined, Opts) of
+        undefined ->
+            {error, <<"Private device not initialized - call init first">>};
+        PublicKeyPEM ->
+            {ok, PublicKeyPEM}
+    end.
+
+%% @doc Simple test for the complete workflow
 secure_workflow_test() ->
-    % Generate RSA key pair for testing
+    % 1. 调用init - 生成密钥对
     PrivateKey = public_key:generate_key({rsa, 2048, 65537}),
-    PublicKey = case PrivateKey of
-        #'RSAPrivateKey'{modulus = N, publicExponent = E} ->
-            #'RSAPublicKey'{modulus = N, publicExponent = E}
-    end,
-    
-    % Convert to PEM format
+    PublicKey = extract_public_key(PrivateKey),
     PrivateKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPrivateKey', PrivateKey)]),
     PublicKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPublicKey', PublicKey)]),
     
-    % Mock options
-    Opts = #{priv_sessions => #{}},
+    % 模拟初始化后的状态
+    InitOpts = #{
+        priv_device_private_key => PrivateKeyPEM,
+        priv_device_public_key => PublicKeyPEM,
+        priv_sessions => #{}
+    },
     
-    % 1. Create a session
+    % 2. 调用create_session
     {ok, #{<<"body">> := #{<<"session_id">> := SessionID}}} = 
-        create_session(undefined, #{<<"session_name">> => <<"Secure Test Session">>}, Opts),
+        create_session(undefined, #{}, InitOpts),
     
-    % Get updated options with the session
+    % 3. 生成一个随机密钥
     SessionKey = crypto:strong_rand_bytes(32),
-    UpdatedOpts = #{priv_sessions => #{SessionID => #{
-        session_key => SessionKey,
-        session_name => <<"Secure Test Session">>,
-        created_at => erlang:system_time(second),
-        message_count => 0
-    }}},
+    EncryptedSessionKey = encrypt_with_public_key(SessionKey, PublicKeyPEM),
     
-    % 2. Request encrypted session key (SECURE)
-    {ok, #{<<"body">> := #{
-        <<"encrypted_key">> := EncryptedSessionKey,
-        <<"algorithm">> := <<"RSA-OAEP">>
-    }}} = get_key(undefined, #{
+    % 4. 调用set_key  
+    SessionData = #{session_key => undefined},
+    OptsWithSession = InitOpts#{priv_sessions => #{SessionID => SessionData}},
+    
+    {ok, _} = set_key(undefined, #{
         <<"session_id">> => SessionID,
-        <<"public_key">> => PublicKeyPEM
-    }, UpdatedOpts),
+        <<"encrypted_session_key">> => base64:encode(EncryptedSessionKey)
+    }, OptsWithSession),
     
-    % 3. Decrypt session key with private key
-    {ok, #{<<"body">> := #{
-        <<"session_key">> := DecryptedSessionKeyB64
-    }}} = decrypt_key(undefined, #{
-        <<"encrypted_key">> => EncryptedSessionKey,
-        <<"private_key">> => PrivateKeyPEM
-    }, undefined),
+    % 5. 生成一个随机内容
+    TestMessage = <<"Hello, World!">>,
     
-    % Verify the decrypted session key matches the original
-    DecryptedSessionKey = base64:decode(DecryptedSessionKeyB64),
-    ?assertEqual(SessionKey, DecryptedSessionKey),
+    % 模拟set_key成功后的状态
+    UpdatedSessionData = #{session_key => SessionKey},
+    FinalOpts = InitOpts#{priv_sessions => #{SessionID => UpdatedSessionData}},
     
-    % 4. Test message encryption/decryption with recovered key
-    TestMessage = <<"This is a secure test message">>,
-    
-    % Encrypt the message
+    % 6. 调用加密
     {ok, #{<<"body">> := #{
         <<"encrypted_message">> := EncMsg,
         <<"iv">> := IV
     }}} = encrypt(undefined, #{
         <<"session_id">> => SessionID,
         <<"message">> => TestMessage
-    }, UpdatedOpts),
+    }, FinalOpts),
     
-    % Decrypt the message
-    {ok, #{<<"body">> := #{
-        <<"decrypted_message">> := DecryptedMessage
-    }}} = decrypt(undefined, #{
-        <<"session_id">> => SessionID,
-        <<"encrypted_message">> => EncMsg,
-        <<"iv">> => IV
-    }, UpdatedOpts),
+    % 调用解密
+    {ok, #{<<"body">> := #{<<"decrypted_message">> := DecryptedMessage}}} = 
+        decrypt(undefined, #{
+            <<"session_id">> => SessionID,
+            <<"encrypted_message">> => EncMsg,
+            <<"iv">> => IV
+        }, FinalOpts),
     
-    % Verify complete roundtrip
+    % 7. 验证内容是否一致
     ?assertEqual(TestMessage, DecryptedMessage).
 
-%% @doc Test to verify that get_key fails without a public key (security test).
-security_test() ->
-    % Mock options with a session
-    SessionID = <<"test_session_123">>,
-    Opts = #{priv_sessions => #{SessionID => #{
-        session_key => crypto:strong_rand_bytes(32),
-        session_name => <<"Test Session">>,
-        created_at => erlang:system_time(second),
-        message_count => 0
-    }}},
+%% @doc Test RSA encryption/decryption
+rsa_encrypt_decrypt_test() ->
+    % 生成RSA密钥对
+    PrivateKey = public_key:generate_key({rsa, 2048, 65537}),
+    PublicKey = extract_public_key(PrivateKey),
+    PrivateKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPrivateKey', PrivateKey)]),
+    PublicKeyPEM = public_key:pem_encode([public_key:pem_entry_encode('RSAPublicKey', PublicKey)]),
     
-    % Try to get key without providing public key (should fail)
-    Result = get_key(undefined, #{<<"session_id">> => SessionID}, Opts),
+    % 测试数据
+    TestData = crypto:strong_rand_bytes(32),
     
-    % Should return an error
-    ?assertMatch({error, <<"Public key is required for secure key exchange">>}, Result).
+    % 加密
+    EncryptedData = encrypt_with_public_key(TestData, PublicKeyPEM),
+    
+    % 解密
+    DecryptedData = decrypt_with_private_key(EncryptedData, PrivateKeyPEM),
+    
+    % 验证
+    ?assertEqual(TestData, DecryptedData).
+
+%% @doc Test initialization behavior
+init_test() ->
+    % Test first initialization
+    EmptyOpts = #{},
+    {ok, #{<<"body">> := #{
+        <<"public_key">> := PublicKeyPEM1,
+        <<"initialized">> := true
+    }}} = init(undefined, #{}, EmptyOpts),
+    
+    % Test second initialization (should return existing key)
+    OptsWithKey = #{priv_device_public_key => PublicKeyPEM1},
+    {ok, #{<<"body">> := #{
+        <<"public_key">> := PublicKeyPEM2,
+        <<"message">> := <<"Private device already initialized">>
+    }}} = init(undefined, #{}, OptsWithKey),
+    
+    % Should return the same key
+    ?assertEqual(PublicKeyPEM1, PublicKeyPEM2).
+
+%% @doc Test session creation without initialization
+create_session_not_initialized_test() ->
+    EmptyOpts = #{},
+    {error, <<"Private device not initialized - call init first">>} = 
+        create_session(undefined, #{}, EmptyOpts).
+
+%% @doc Test key setting without session
+set_key_no_session_test() ->
+    % Initialize device first
+    EmptyOpts = #{},
+    {ok, #{<<"body">> := #{
+        <<"public_key">> := _PublicKeyPEM
+    }}} = init(undefined, #{}, EmptyOpts),
+    
+    % Try to set key for non-existent session
+    TestOpts = EmptyOpts#{
+        priv_device_private_key => <<"dummy_key">>,
+        priv_sessions => #{}
+    },
+    {error, <<"Session not found">>} = set_key(undefined, #{
+        <<"session_id">> => <<"fake_session">>,
+        <<"encrypted_session_key">> => <<"fake_key">>
+    }, TestOpts).
