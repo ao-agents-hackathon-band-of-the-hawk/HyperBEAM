@@ -30,14 +30,14 @@ info(_Msg1, _Msg2, _Opts) ->
 infer(_M1, M2, Opts) ->
     % Extract parameters
     TxID = hb_ao:get(<<"model-id">>, M2, undefined, Opts),
-    ModelConfig = hb_ao:get(<<"config">>, M2, "{\"n_gpu_layers\":48,\"ctx_size\":64000}", Opts),
+    ModelConfig = hb_ao:get(<<"config">>, M2, "{\"n_gpu_layers\":96,\"ctx_size\":64000,\"batch_size\":64000}", Opts),
     Prompt = hb_ao:get(<<"prompt">>, M2, Opts),
     SessionId = hb_ao:get(<<"session-id">>, M2, undefined, Opts),
     
     case TxID of
         undefined ->
             % Fallback to original behavior if no TX ID provided
-            load_and_infer("model/qwen2.5-14b-instruct-q2_k.gguf", ModelConfig, Prompt, SessionId, Opts);
+            load_and_infer("models/qwen2.5-14b-instruct-q2_k.gguf", ModelConfig, Prompt, SessionId, Opts);
         _ ->
             % Download model from Arweave using TX ID
             case download_and_store_model(TxID, Opts) of
