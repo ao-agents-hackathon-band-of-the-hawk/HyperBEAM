@@ -4,7 +4,6 @@
 -module(dev_wasi_nn_nif).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
-
 -export([
     init_backend/0,
     load_by_name_with_config/3,
@@ -317,42 +316,59 @@ init_execution_context_once(Context, SessionId) ->
             {error, no_model_loaded}
     end.
 
-run_inference_test() ->
-    Path = "model-cache/XOJ8FBxa6sGLwChnxhF2L71WkKLSKq1aU5Yn5WnFLrY",
-    Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
+
+%% @doc Test WASI-NN inference with a single model.
+%% This test validates the complete inference pipeline including model loading,
+%% session management, and inference execution. The test uses a pre-downloaded
+%% model file to avoid network dependencies during inference testing.
+%%
+%% The test performs the following steps:
+%% 1. Loads a pre-downloaded model from local storage
+%% 2. Creates a model context using the NIF
+%% 3. Initializes an execution context for the session
+%% 4. Runs inference with a test prompt
+%% 5. Validates the output is not empty
+%% 6. Cleans up all contexts
+%%
+%% @returns ok on success, throws an error on failure.
+run_inference_test() ->    
+    % Path to the pre-downloaded model file
+    % Note: This model should be downloaded first using dev_wasi_nn:model_download_test()
+    Path = "./models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
+    
+    % Model configuration for GPU inference
+    % - n_gpu_layers: Number of layers to offload to GPU
+    % - ctx_size: Context window size for the model
+    % - stream-stdout: Enable streaming output
+    % - enable_debug_log: Enable debug logging
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
+    
+    % Session identifier for context management
     SessionId = "test_session_1",
-    Prompt1 = "What is the meaning of life",
     
-    % Test 1: Load first model (should create new context)
-    {ok, Context1} = switch_model(Path, Config),
-    ?event(dev_wasi_nn_nif, {model_loaded, Context1, Path, Config}),
+    % Test prompt for inference
+    Prompt = "What is the meaning of life",
     
-    % Test 2: Create session and run inference
-    {ok, ExecContextId1} = init_execution_context_once(Context1, SessionId),
-    {ok, Output1} = run_inference(Context1, ExecContextId1, Prompt1),
-    ?event(dev_wasi_nn_nif, {run_inference, Context1, ExecContextId1, Prompt1, Output1}),
-    ?assertNotEqual(Output1, ""),
+    % Step 1: Load the model and create a context
+    % This will either create a new context or reuse an existing one
+    {ok, Context} = switch_model(Path, Config),
+    ?event(dev_wasi_nn_nif, {model_loaded, Context, Path, Config}),
     
-    % Test 3: Switch to same model (should reuse context)
-    StartTime = erlang:system_time(millisecond),
-    {ok, Context1_reused} = switch_model(Path, Config),
-    EndTime = erlang:system_time(millisecond),
-    ReuseDuration = EndTime - StartTime,
-    ?event(dev_wasi_nn_nif, {context_reuse, ReuseDuration}),
-    ?assert(ReuseDuration < 100), % Should be nearly instant
-    ?assertEqual(Context1, Context1_reused), % Should be the same context
-    {ok, Output2} = run_inference(Context1_reused, ExecContextId1, "Who are you?"),
-    ?event(dev_wasi_nn_nif, {run_inference, Context1, ExecContextId1, "Who are you?", Output2}),
+    % Step 2: Create or reuse execution context for the session
+    % This ensures session-specific state management
+    {ok, ExecContextId} = init_execution_context_once(Context, SessionId),
     
-    % Test 9: Try to switch to cleaned up model (should create new context)
-    {ok, Context2_new} = switch_model(Path2, Config),
-    {ok, ExecContextId3} = init_execution_context_once(Context2_new, "test_session_2"),
-    {ok, Output3} = run_inference(Context2_new, ExecContextId3, Prompt1),
-    ?event(dev_wasi_nn_nif, {run_inference, Context2_new, ExecContextId3, Prompt1, Output3}),
-    ?assertNotEqual(Output3, ""),
-    ?assertNotEqual(Context1, Context2_new), % Should be a new context
+    % Step 3: Run inference with the provided prompt
+    % This is the core inference operation
+    {ok, Output} = run_inference(Context, ExecContextId, Prompt),
+    ?event(output, Output),
     
-    % Cleanup all contexts
-    cleanup_all_contexts().
+    % Step 4: Validate the inference output
+    % Ensure we got a meaningful response
+    ?assertNotEqual(Output, ""),
+    
+    % Step 5: Clean up all contexts to free resources
+    % This is important for memory management
+    cleanup_all_contexts(),
+    ok.

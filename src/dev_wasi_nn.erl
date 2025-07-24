@@ -64,19 +64,29 @@ infer(_M1, M2, Opts) ->
         "{\"n_gpu_layers\":96,\"ctx_size\":64000,\"batch_size\":64000}", Opts),
     Prompt = hb_ao:get(<<"prompt">>, M2, Opts),
     SessionId = hb_ao:get(<<"session-id">>, M2, undefined, Opts),
-    
     ?event(dev_wasi_nn, {infer, {tx_id, TxID}, {session_id, SessionId}}),
-    
     case TxID of
-        ?event(dev_wasi_nn, {infer, {downloading_model, TxID}}),
-        case download_and_store_model(TxID, Opts) of
-            {ok, LocalModelPath} ->
-                ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
-                load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
-            {error, Reason} ->
-                ?event(dev_wasi_nn, {infer, {model_download_failed, Reason}}),
-                {error, {model_download_failed, Reason}}
-        end
+        undefined ->
+            ?event(dev_wasi_nn, {infer, {fallback_to_default_model}}),
+            DefaultTxID = <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
+            case read_model_by_ID(DefaultTxID, Opts) of
+                {ok, LocalModelPath} ->
+                    ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
+                    load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
+                {error, Reason} ->
+                    ?event(dev_wasi_nn, {infer, {model_download_failed, Reason}}),
+                    {error, {model_download_failed, Reason}}
+            end;
+        _ ->
+            ?event(dev_wasi_nn, {infer, {downloading_model, TxID}}),
+            case read_model_by_ID(TxID, Opts) of
+                {ok, LocalModelPath} ->
+                    ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
+                    load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
+                {error, Reason} ->
+                    ?event(dev_wasi_nn, {infer, {model_download_failed, Reason}}),
+                    {error, {model_download_failed, Reason}}
+            end
     end.
 
 %%%--------------------------------------------------------------------
@@ -112,8 +122,9 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
                     % Run inference with session-specific context
                     case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt)) of
                         {ok, Output} ->
+                            ?event(output, Output),
                             {ok, #{
-                                <<"result">> => hb_util:encode(Output),
+                                <<"result">> => Output,
                                 <<"session-id">> => list_to_binary(SessionId)
                             }};
                         {error, Reason} ->
@@ -141,7 +152,7 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
 download_model_from_arweave(TxID, StoreConfig, ModelFileName, LocalPath) ->
     try
         case hb_gateway_client:data(TxID, #{
-            http_connect_timeout => 10 * 60 * 1000
+            http_connect_timeout => 10 * 60 * 100000
         }) of
             {ok, ModelData} ->
                 ?event(dev_wasi_nn, {download_model_from_arweave, {data_received, TxID}}),
@@ -171,24 +182,24 @@ download_model_from_arweave(TxID, StoreConfig, ModelFileName, LocalPath) ->
 %% @param Opts A map of configuration options (currently unused).
 %% @returns {ok, LocalPath} on success where LocalPath is the local file path,
 %%          {error, Reason} on failure.
-download_and_store_model(TxID, _Opts) ->
+read_model_by_ID(TxID, _Opts) ->
     StoreConfig = #{
         <<"store-module">> => hb_store_fs,
         <<"name">> => <<"./models">>
     },
     ModelFileName = <<TxID/binary, ".gguf">>,
     LocalPath = <<"./models/", ModelFileName/binary>>,
-    ?event(dev_wasi_nn, {download_and_store_model, {tx_id, TxID}, {local_path, LocalPath}}),
+    ?event(dev_wasi_nn, {read_model_by_ID, {tx_id, TxID}, {local_path, LocalPath}}),
     
     case hb_store:read(StoreConfig, binary_to_list(ModelFileName)) of
         {ok, _ExistingData} ->
-            ?event(dev_wasi_nn, {download_and_store_model, {model_already_exists, TxID}}),
+            ?event(dev_wasi_nn, {read_model_by_ID, {model_already_exists, TxID}}),
             {ok, binary_to_list(LocalPath)};
         not_found ->
-            ?event(dev_wasi_nn, {download_and_store_model, {downloading_from_arweave, TxID}}),
+            ?event(dev_wasi_nn, {read_model_by_ID, {downloading_from_arweave, TxID}}),
             download_model_from_arweave(TxID, StoreConfig, ModelFileName, LocalPath);
         {error, ReadError} ->
-            ?event(dev_wasi_nn, {download_and_store_model, {read_error, TxID, ReadError}}),
+            ?event(dev_wasi_nn, {read_model_by_ID, {read_error, TxID, ReadError}}),
             download_model_from_arweave(TxID, StoreConfig, ModelFileName, LocalPath)
     end.
 
@@ -204,3 +215,93 @@ generate_session_id(_Opts) ->
     Pid = self(),
     SessionId = io_lib:format("req_~p_~p_~p", [Timestamp, Random, Pid]),
     lists:flatten(SessionId).
+
+
+%% @doc Unit test for model download functionality.
+%% This test validates the model download and caching mechanism by attempting
+%% to download a model from Arweave and store it locally. The test uses a
+%% known Arweave transaction ID to ensure reliable testing.
+%%
+%% The test performs the following steps:
+%% 1. Attempts to read the model from local cache first
+%% 2. If not found locally, downloads the model from Arweave
+%% 3. Stores the model in the local filesystem cache
+%% 4. Returns the local file path for the downloaded model
+%%
+%% This test is a prerequisite for inference testing as it ensures the model
+%% is available locally before running inference operations.
+%%
+%% @returns ok on success, throws an error on failure.
+model_download_test() ->
+    % Arweave transaction ID for the test model
+    % This is a known model that should be available on Arweave
+    TxID = <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
+    
+    % Attempt to download or retrieve the model
+    case read_model_by_ID(TxID, #{}) of
+        {ok, LocalModelPath} ->
+            % Model successfully downloaded or found in cache
+            ?event(dev_wasi_nn, {model_download_test, {model_ready, LocalModelPath}}),
+            ?assert(is_list(LocalModelPath)),
+            ?assert(length(LocalModelPath) > 0);
+        {error, Reason} ->
+            % Model download failed
+            ?event(dev_wasi_nn, {model_download_test, {model_download_failed, Reason}}),
+            ?assert(false, {model_download_failed, Reason})
+    end.
+
+%% @doc Unit test for the complete inference API.
+%% This test validates the end-to-end inference functionality by testing
+%% the complete pipeline from model retrieval to inference execution.
+%% The test uses the infer/3 function directly to simulate real API usage.
+%%
+%% IMPORTANT: This test requires the model to be available locally.
+%% Run model_download_test() first to ensure the model is downloaded.
+%%
+%% The test performs the following steps:
+%% 1. Creates a test message with model ID and prompt
+%% 2. Calls the infer/3 function with the test parameters
+%% 3. Validates the response format and content
+%% 4. Ensures the inference result is meaningful
+%%
+%% This test simulates real-world API usage and validates the complete
+%% inference workflow including model loading, session management,
+%% and inference execution.
+%%
+%% @returns ok on success, throws an error on failure.
+infer_test() ->
+    % Create test message with inference parameters
+    % - model-id: Arweave transaction ID of the model to use
+    % - prompt: Input text for inference
+    M2 = #{
+        <<"model-id">> => <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
+        <<"prompt">> => <<"Hello">>
+    },
+    
+    % Empty options map for this test
+    Opts = #{},
+    
+    % Execute the inference API call
+    case infer(#{}, M2, Opts) of
+        {ok, #{<<"result">> := Result, <<"session-id">> := SessionId}} ->
+            % Inference completed successfully
+            ?event(dev_wasi_nn, {infer_test, {result, Result}, {session_id, SessionId}}),
+            
+            % Validate the inference result
+            % Ensure result is a binary and has content
+            ?assert(is_binary(Result)),
+            ?assert(byte_size(Result) > 0),
+            
+            % Validate session ID is present
+            ?assert(is_binary(SessionId)),
+            ?assert(byte_size(SessionId) > 0);
+            
+        {error, Reason} ->
+            % Inference failed
+            ?event(dev_wasi_nn, {infer_test, {inference_failed, Reason}}),
+            ?assert(false, Reason)
+    end.
+
+
+
+
