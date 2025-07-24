@@ -6,7 +6,6 @@
 -export([info/1, info/3, infer/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
--hb_debug(print).
 %% @doc Get device information and exported functions.
 %% Returns the list of functions that are exposed via the device API.
 %% This is used by the HyperBEAM runtime to determine which endpoints
