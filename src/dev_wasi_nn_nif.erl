@@ -318,7 +318,7 @@ init_execution_context_once(Context, SessionId) ->
     end.
 
 run_inference_test() ->
-    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+    Path = "model-cache/XOJ8FBxa6sGLwChnxhF2L71WkKLSKq1aU5Yn5WnFLrY",
     Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",

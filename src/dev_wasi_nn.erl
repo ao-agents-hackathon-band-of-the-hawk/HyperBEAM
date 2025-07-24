@@ -5,7 +5,8 @@
 -module(dev_wasi_nn).
 -export([info/1, info/3, infer/3]).
 -include("include/hb.hrl").
-
+-include_lib("eunit/include/eunit.hrl").
+-hb_debug(print).
 %% @doc Get device information and exported functions.
 %% Returns the list of functions that are exposed via the device API.
 %% This is used by the HyperBEAM runtime to determine which endpoints
@@ -67,20 +68,15 @@ infer(_M1, M2, Opts) ->
     ?event(dev_wasi_nn, {infer, {tx_id, TxID}, {session_id, SessionId}}),
     
     case TxID of
-        undefined ->
-            ?event(dev_wasi_nn, {infer, {fallback_to_default_model}}),
-            load_and_infer("models/qwen2.5-14b-instruct-q2_k.gguf", 
-                ModelConfig, Prompt, SessionId, Opts);
-        _ ->
-            ?event(dev_wasi_nn, {infer, {downloading_model, TxID}}),
-            case download_and_store_model(TxID, Opts) of
-                {ok, LocalModelPath} ->
-                    ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
-                    load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
-                {error, Reason} ->
-                    ?event(dev_wasi_nn, {infer, {model_download_failed, Reason}}),
-                    {error, {model_download_failed, Reason}}
-            end
+        ?event(dev_wasi_nn, {infer, {downloading_model, TxID}}),
+        case download_and_store_model(TxID, Opts) of
+            {ok, LocalModelPath} ->
+                ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
+                load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
+            {error, Reason} ->
+                ?event(dev_wasi_nn, {infer, {model_download_failed, Reason}}),
+                {error, {model_download_failed, Reason}}
+        end
     end.
 
 %%%--------------------------------------------------------------------
@@ -208,47 +204,3 @@ generate_session_id(_Opts) ->
     Pid = self(),
     SessionId = io_lib:format("req_~p_~p_~p", [Timestamp, Random, Pid]),
     lists:flatten(SessionId).
-
-cache_test_() ->
-    %% Start the HTTP server (required for gateway access)
-    hb_http_server:start_node(#{}),
-    %% Configure store with local caching
-    LocalStore = #{
-        <<"store-module">> => hb_store_fs,
-        <<"name">> => <<"model-cache">>
-    },
-    hb_store:reset(LocalStore),
-    Opts = #{
-        store => [
-            %% Try local cache first
-            LocalStore,
-            #{
-                <<"store-module">> => hb_store_gateway,
-                %% Cache results here
-                <<"local-store">> => LocalStore
-            }
-        ]
-    },
-
-    %% Read from Arweave
-    ID = <<"uJBApOt4ma3pTfY6Z4xmknz5vAasup4KcGX7FJ0Of8w">>,
-    case hb_cache:read(ID, Opts) of
-        {ok, Message} ->
-            ?event("Successfully read message from Arweave!~n"),
-
-            %% Validate the data content (similar to l1_transaction_test)
-            Data = maps:get(<<"data">>, Message),
-            ?assertEqual(<<"Hello World">>, Data),
-            ?event(cache, {hello_world_validation, Data}),
-            %% Subsequent reads will be from local cache
-            {ok, CachedMessage} = hb_cache:read(ID, #{store => [LocalStore]}),
-            io:format("Read from local cache: ~p~n", [CachedMessage]),
-
-            %% Validate cached data as well - need to resolve lazy links
-            FullyCachedMessage = hb_cache:ensure_all_loaded(CachedMessage, #{store => [LocalStore]}),
-            CachedData = maps:get(<<"data">>, FullyCachedMessage),
-            ?assertEqual(<<"Hello World">>, CachedData),
-            ?event(cache, {cached_hello_world_validation, CachedData});
-        not_found ->
-            ?event("Message not found on Arweave~n")
-    end.
