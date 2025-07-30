@@ -319,11 +319,11 @@ init_execution_context_once(Context, SessionId) ->
 
 %% @doc Test WASI-NN inference with a single model.
 %% This test validates the complete inference pipeline including model loading,
-%% session management, and inference execution. The test uses a pre-downloaded
-%% model file to avoid network dependencies during inference testing.
+%% session management, and inference execution. The test uses a model from Arweave
+%% to avoid network dependencies during inference testing.
 %%
 %% The test performs the following steps:
-%% 1. Loads a pre-downloaded model from local storage
+%% 1. Loads a  model from Arweave
 %% 2. Creates a model context using the NIF
 %% 3. Initializes an execution context for the session
 %% 4. Runs inference with a test prompt
@@ -333,9 +333,8 @@ init_execution_context_once(Context, SessionId) ->
 %% @returns ok on success, throws an error on failure.
 run_inference_test() ->    
     % Path to the pre-downloaded model file
-    % Note: This model should be downloaded first using dev_wasi_nn:model_download_test()
-    Path = "./models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
-    
+    {ok, Path} = dev_wasi_nn:read_model_by_ID("ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo"),
+    ?event(dev_wasi_nn_nif, {model_path, Path}),
     % Model configuration for GPU inference
     % - n_gpu_layers: Number of layers to offload to GPU
     % - ctx_size: Context window size for the model
@@ -348,7 +347,7 @@ run_inference_test() ->
     SessionId = "test_session_1",
     
     % Test prompt for inference
-    Prompt = "What is the meaning of life",
+    Prompt = "Who are you ?",
     
     % Step 1: Load the model and create a context
     % This will either create a new context or reuse an existing one

@@ -4,6 +4,7 @@
 %%% Models are cached locally to avoid repeated downloads.
 -module(dev_wasi_nn).
 -export([info/1, info/3, infer/3]).
+-export([read_model_by_ID/1]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 %% @doc Get device information and exported functions.
@@ -68,7 +69,7 @@ infer(_M1, M2, Opts) ->
         undefined ->
             ?event(dev_wasi_nn, {infer, {fallback_to_default_model}}),
             DefaultTxID = <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
-            case read_model_by_ID(DefaultTxID, Opts) of
+            case read_model_by_ID(DefaultTxID) of
                 {ok, LocalModelPath} ->
                     ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
                     load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
@@ -78,7 +79,7 @@ infer(_M1, M2, Opts) ->
             end;
         _ ->
             ?event(dev_wasi_nn, {infer, {downloading_model, TxID}}),
-            case read_model_by_ID(TxID, Opts) of
+            case read_model_by_ID(TxID) of
                 {ok, LocalModelPath} ->
                     ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
                     load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
@@ -139,68 +140,104 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
             {error, Reason3}
     end.
 
-%% @doc Download model data from Arweave and store it locally.
-%% Helper function that handles the actual download and storage process
-%% when a model is not found in the local cache.
+%% @doc Download and retrieve a model by Arweave transaction ID.
+%% This function handles the complete model retrieval workflow including:
+%% - Starting the HTTP server for Arweave gateway access
+%% - Configuring local filesystem caching to avoid repeated downloads
+%% - Downloading the model from Arweave if not already cached
+%% - Resolving the local file path where the model is stored
 %%
-%% @param TxID The Arweave transaction ID of the model.
-%% @param StoreConfig Configuration for the local storage.
-%% @param ModelFileName The filename to use for storing the model.
-%% @param LocalPath The full local path where the model will be stored.
-%% @returns {ok, LocalPath} on success, {error, Reason} on failure.
-download_model_from_arweave(TxID, StoreConfig, ModelFileName, LocalPath) ->
-    try
-        case hb_gateway_client:data(TxID, #{
-            http_connect_timeout => 10 * 60 * 100000
-        }) of
-            {ok, ModelData} ->
-                ?event(dev_wasi_nn, {download_model_from_arweave, {data_received, TxID}}),
-                case hb_store:write(StoreConfig, ModelFileName, ModelData) of
-                    ok ->
-                        ?event(dev_wasi_nn, {download_model_from_arweave, {model_stored, TxID, LocalPath}}),
-                        {ok, binary_to_list(LocalPath)};
-                    StoreError ->
-                        ?event(dev_wasi_nn, {download_model_from_arweave, {store_failed, TxID, StoreError}}),
-                        {error, {store_failed, StoreError}}
-                end;
-            {error, DownloadError} ->
-                ?event(dev_wasi_nn, {download_model_from_arweave, {download_failed, TxID, DownloadError}}),
-                {error, {download_failed, DownloadError}}
-        end
-    catch
-        Error:Reason ->
-            ?event(dev_wasi_nn, {download_model_from_arweave, {exception, TxID, Error, Reason}}),
-            {error, {exception, Error, Reason}}
-    end.
-%% @doc Download model from Arweave and store it locally.
-%% Attempts to retrieve a model file from local storage first, and if not found,
-%% downloads it from Arweave using the provided transaction ID. The model is
-%% stored locally with a .gguf extension for future use.
+%% The function uses a two-tier storage strategy:
+%% 1. First checks local cache (hb_store_fs) for existing model
+%% 2. Falls back to Arweave gateway (hb_store_gateway) if not cached
+%% 3. Automatically caches downloaded models locally for future use
 %%
-%% @param TxID The Arweave transaction ID of the model file.
-%% @param Opts A map of configuration options (currently unused).
-%% @returns {ok, LocalPath} on success where LocalPath is the local file path,
-%%          {error, Reason} on failure.
-read_model_by_ID(TxID, _Opts) ->
-    StoreConfig = #{
+%% @param TxID The Arweave transaction ID containing the model file as a binary.
+%% @returns {ok, LocalFilePath} where LocalFilePath is a string path to the 
+%%          cached model file, or {error, Reason} on failure.
+read_model_by_ID(TxID) ->
+    %% Start the HTTP server (required for gateway access)
+    hb_http_server:start_node(#{}),
+    %% Configure store with local caching for model files
+    LocalStore = #{
         <<"store-module">> => hb_store_fs,
-        <<"name">> => <<"./models">>
+        <<"name">> => <<"model-cache">>
     },
-    ModelFileName = <<TxID/binary, ".gguf">>,
-    LocalPath = <<"./models/", ModelFileName/binary>>,
-    ?event(dev_wasi_nn, {read_model_by_ID, {tx_id, TxID}, {local_path, LocalPath}}),
-    
-    case hb_store:read(StoreConfig, binary_to_list(ModelFileName)) of
-        {ok, _ExistingData} ->
-            ?event(dev_wasi_nn, {read_model_by_ID, {model_already_exists, TxID}}),
-            {ok, binary_to_list(LocalPath)};
+    Opts = #{
+        store => [
+            %% Try local cache first
+            LocalStore,
+            #{
+                <<"store-module">> => hb_store_gateway,
+                %% Cache results here
+                <<"local-store">> => LocalStore
+            }
+        ]
+    },
+    %% Attempt to read the model from cache or download from Arweave
+    case hb_cache:read(TxID, Opts) of
+        {ok, Message} ->
+            ?event(cache, {successfully_read_message_from_arweave}),
+            
+            %% Extract the data reference from the message
+            %% This could be either a link to existing cached data or binary data
+            DataLink = maps:get(<<"data">>, Message),
+            ?event(cache, {data_link, DataLink}),
+            
+            %% Handle two different data storage formats
+            case DataLink of
+                %% Case 1: Data is stored as a link reference to existing cached file
+                {link, DataPath, _LinkOpts} ->
+                    ?event(cache, {extracted_data_path, DataPath}),
+                    
+                    %% Resolve the relative path to absolute filesystem path
+                    %% The store resolves internal paths to actual file locations
+                    ResolvedPath = hb_store:resolve(LocalStore, DataPath),
+                    StoreName = maps:get(<<"name">>, LocalStore),
+                    %% Construct full path: "model-cache/resolved/path/to/file"
+                    ActualFilePath = <<StoreName/binary, "/", ResolvedPath/binary>>,
+                    ?event(cache, {actual_file_path, ActualFilePath}),
+                    
+                    %% Convert binary path to string for external API compatibility
+                    StringPath = case is_binary(ActualFilePath) of
+                        true -> binary_to_list(ActualFilePath);
+                        false -> ActualFilePath
+                    end,
+                    {ok, StringPath};
+                %% Case 2: Data is stored as direct binary content (needs hash-based path)
+                _ ->
+                    %% Load the binary data into memory if not already loaded
+                    LoadedData = hb_cache:ensure_loaded(DataLink, Opts),
+                    ?event(cache, {loaded_data_size, byte_size(LoadedData)}),
+                    
+                    %% Generate content-based hash path for storage location
+                    %% This ensures identical files share the same storage location
+                    Hashpath = hb_path:hashpath(LoadedData, Opts),
+                    ?event(cache, {calculated_hashpath, Hashpath}),
+                    
+                    %% Construct the standardized data path using content hash
+                    DataPath = <<"data/", Hashpath/binary>>,
+                    ?event(cache, {data_path, DataPath}),
+                    
+                    %% Resolve to actual filesystem path and construct full path
+                    ResolvedPath = hb_store:resolve(LocalStore, DataPath),
+                    StoreName = maps:get(<<"name">>, LocalStore),
+                    ActualFilePath = <<StoreName/binary, "/", ResolvedPath/binary>>,
+                    ?event(cache, {actual_file_path, ActualFilePath}),
+                    
+                    %% Convert binary path to string for external API compatibility
+                    StringPath = case is_binary(ActualFilePath) of
+                        true -> binary_to_list(ActualFilePath);
+                        false -> ActualFilePath
+                    end,
+                    {ok, StringPath}
+            end;
         not_found ->
-            ?event(dev_wasi_nn, {read_model_by_ID, {downloading_from_arweave, TxID}}),
-            download_model_from_arweave(TxID, StoreConfig, ModelFileName, LocalPath);
-        {error, ReadError} ->
-            ?event(dev_wasi_nn, {read_model_by_ID, {read_error, TxID, ReadError}}),
-            download_model_from_arweave(TxID, StoreConfig, ModelFileName, LocalPath)
+            %% Model transaction ID not found on Arweave network
+            ?event("Message not found on Arweave~n"),
+            {error, not_found}
     end.
+
 
 %% @doc Generate a unique session ID for inference requests.
 %% Creates a unique identifier combining timestamp, random number, and process
@@ -216,38 +253,6 @@ generate_session_id(_Opts) ->
     lists:flatten(SessionId).
 
 
-%% @doc Unit test for model download functionality.
-%% This test validates the model download and caching mechanism by attempting
-%% to download a model from Arweave and store it locally. The test uses a
-%% known Arweave transaction ID to ensure reliable testing.
-%%
-%% The test performs the following steps:
-%% 1. Attempts to read the model from local cache first
-%% 2. If not found locally, downloads the model from Arweave
-%% 3. Stores the model in the local filesystem cache
-%% 4. Returns the local file path for the downloaded model
-%%
-%% This test is a prerequisite for inference testing as it ensures the model
-%% is available locally before running inference operations.
-%%
-%% @returns ok on success, throws an error on failure.
-model_download_test() ->
-    % Arweave transaction ID for the test model
-    % This is a known model that should be available on Arweave
-    TxID = <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
-    
-    % Attempt to download or retrieve the model
-    case read_model_by_ID(TxID, #{}) of
-        {ok, LocalModelPath} ->
-            % Model successfully downloaded or found in cache
-            ?event(dev_wasi_nn, {model_download_test, {model_ready, LocalModelPath}}),
-            ?assert(is_list(LocalModelPath)),
-            ?assert(length(LocalModelPath) > 0);
-        {error, Reason} ->
-            % Model download failed
-            ?event(dev_wasi_nn, {model_download_test, {model_download_failed, Reason}}),
-            ?assert(false, {model_download_failed, Reason})
-    end.
 
 %% @doc Unit test for the complete inference API.
 %% This test validates the end-to-end inference functionality by testing
@@ -274,7 +279,7 @@ infer_test() ->
     % - prompt: Input text for inference
     M2 = #{
         <<"model-id">> => <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
-        <<"prompt">> => <<"Hello">>
+        <<"prompt">> => <<"Hello who are you?">>
     },
     
     % Empty options map for this test
@@ -300,6 +305,19 @@ infer_test() ->
             ?event(dev_wasi_nn, {infer_test, {inference_failed, Reason}}),
             ?assert(false, Reason)
     end.
+%% read model ID test
+read_model_by_ID_test() ->
+    ID = <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
+    case read_model_by_ID(ID) of
+        {ok, LocalModelPath} ->
+            ?event(dev_wasi_nn, {read_model_by_ID_test, {model_ready, LocalModelPath}}),
+            ?assert(is_list(LocalModelPath)),
+            ?assert(length(LocalModelPath) > 0);
+        {error, Reason} ->
+            ?event(dev_wasi_nn, {read_model_by_ID_test, {model_read_failed, Reason}}),
+            ?assert(false, {model_read_failed, Reason})
+    end.
+
 
 
 
