@@ -141,8 +141,12 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
                         case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt)) of
                             {ok, Output} ->
                                 {ok, #{
-                                    <<"result">> => hb_util:encode(Output),
-                                    <<"session-id">> => list_to_binary(SessionId)
+                                    <<"body">> => hb_json:encode(#{
+                                        <<"result">> => Output,
+                                        <<"session-id">> => list_to_binary(SessionId)
+                                    }),
+                                    <<"action">> => <<"Inference-Response">>,
+                                    <<"status">> => 200
                                 }};
                             {error, Reason} ->
                                 ?event(dev_wasi_nn, {inference_failed, SessionId, Reason}),
