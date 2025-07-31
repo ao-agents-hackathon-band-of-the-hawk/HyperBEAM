@@ -27,29 +27,25 @@ info(_Msg1, _Msg2, _Opts) ->
     },
     {ok, InfoBody}.
 
-infer(_M1, M2, Opts) ->
-    % Extract parameters
-    TxID = hb_ao:get(<<"model-id">>, M2, undefined, Opts),
-    ModelConfig = hb_ao:get(<<"config">>, M2, "{\"n_gpu_layers\":96,\"ctx_size\":64000,\"batch_size\":64000}", Opts),
-    Prompt = hb_ao:get(<<"prompt">>, M2, Opts),
-    SessionId = hb_ao:get(<<"session-id">>, M2, undefined, Opts),
-    
-    case TxID of
-        undefined ->
-            % Fallback to original behavior if no TX ID provided
-            load_and_infer("models/qwen2.5-14b-instruct-q2_k.gguf", ModelConfig, Prompt, SessionId, Opts);
+infer(M1, M2, Opts) ->
+    TxID = maps:get(<<"model_id">>, M2, undefined),
+    DefaultModel = <<"qwen2.5-14b-instruct-q2_k.gguf">>,
+
+    ModelPath = case TxID of
+        undefined -> DefaultModel;
         _ ->
-            % Download model from Arweave using TX ID
-            case download_and_store_model(TxID, Opts) of
-                {ok, LocalModelPath} ->
-                    load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
+            case download_and_store_model(TxID) of
+                {ok, LocalModelPath} -> LocalModelPath;
                 {error, Reason} ->
-                    {error, {model_download_failed, Reason}}
+                    ?event(dev_wasi_nn, {model_download_failed, TxID, Reason}),
+                    DefaultModel
             end
-    end.
+    end,
+    ?event(dev_wasi_nn, {infer, M1, M2, Opts, ModelPath}),
+    load_and_infer(M1, M2#{<<"model_path">> => <<"models/", ModelPath/binary>>}, Opts).
 
 %% @doc Download model from Arweave and store it locally
-download_and_store_model(TxID, Opts) ->
+download_and_store_model(TxID) ->
     % Configure local storage
     StoreConfig = #{
         <<"store-module">> => hb_store_fs,
@@ -123,16 +119,23 @@ download_and_store_model(TxID, Opts) ->
     end.
 
 %% @doc Load model and perform inference using persistent context management with session support
-load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
+load_and_infer(_M1, M2, Opts) ->
+    Model = maps:get(<<"model_path">>, M2, <<"">>),
+    ModelConfig = maps:get(<<"config">>, M2, "{\"n_gpu_layers\":96,\"ctx_size\":64000,\"batch_size\":64000}"),
+    Prompt = maps:get(<<"prompt">>, M2),
+    UserSessionId = maps:get(<<"session_id">>, M2, undefined),
+    Reference = maps:get(<<"reference">>, M2, undefined),
+    Worker = maps:get(<<"worker">>, M2, undefined),
+
     % Use provided session ID or generate a new one
-    SessionId = case ProvidedSessionId of
+    SessionId = case UserSessionId of
         undefined -> generate_session_id(Opts);
-        _ -> binary_to_list(ProvidedSessionId)
+        _ -> binary_to_list(UserSessionId)
     end,
     
     try
         % Use persistent context management (fast if model already loaded)
-        case dev_wasi_nn_nif:switch_model(ModelPath, ModelConfig) of
+        case dev_wasi_nn_nif:switch_model(binary_to_list(Model), ModelConfig) of
             {ok, Context} ->
                 % Create or reuse session-specific execution context
                 case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of
@@ -140,12 +143,15 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
                         % Run inference with session-specific context
                         case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt)) of
                             {ok, Output} ->
+                                ?event(dev_wasi_nn, {inference_success, Reference}),
                                 {ok, #{
                                     <<"body">> => hb_json:encode(#{
-                                        <<"result">> => Output,
-                                        <<"session-id">> => list_to_binary(SessionId)
+                                        <<"result">> => Output
                                     }),
-                                    <<"action">> => <<"Inference-Response">>,
+                                    <<"X-Session">> => list_to_binary(SessionId),
+                                    <<"X-Reference">> => Reference,
+                                    <<"X-Worker">> => Worker,
+                                    <<"action">> => <<"Infer-Response">>,
                                     <<"status">> => 200
                                 }};
                             {error, Reason} ->
@@ -157,7 +163,7 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
                         {error, Reason2}
                 end;
             {error, Reason3} ->
-                ?event(dev_wasi_nn, {model_load_failed, SessionId, ModelPath, Reason3}),
+                ?event(dev_wasi_nn, {model_load_failed, SessionId, Model, Reason3}),
                 {error, Reason3}
         end
     catch
@@ -170,8 +176,6 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
 generate_session_id(_Opts) ->
     % Use a combination of timestamp and random number for uniqueness
     Timestamp = erlang:system_time(microsecond),
-    Random = rand:uniform(999999),
-    % Include process info to help with debugging
-    Pid = self(),
-    SessionId = io_lib:format("req_~p_~p_~p", [Timestamp, Random, Pid]),
+    Random = rand:uniform(999),
+    SessionId = io_lib:format("req_~p_~p", [Timestamp, Random]),
     lists:flatten(SessionId).
