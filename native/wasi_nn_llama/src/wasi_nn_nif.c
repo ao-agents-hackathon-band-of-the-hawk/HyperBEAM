@@ -44,17 +44,17 @@ static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 	g_wasi_nn_functions.init_backend = (init_backend_fn)dlsym(g_wasi_nn_functions.handle, "init_backend");
     g_wasi_nn_functions.init_backend_with_config = (init_backend_with_config_fn)dlsym(g_wasi_nn_functions.handle, "init_backend_with_config");
     g_wasi_nn_functions.deinit_backend = (deinit_backend_fn)dlsym(g_wasi_nn_functions.handle, "deinit_backend");
+    g_wasi_nn_functions.load_by_name = (load_by_name_fn)dlsym(g_wasi_nn_functions.handle, "load_by_name");
+    g_wasi_nn_functions.load_by_name_with_config = (load_by_name_with_config_fn)dlsym(g_wasi_nn_functions.handle, "load_by_name_with_config");
     g_wasi_nn_functions.init_execution_context = (init_execution_context_fn)dlsym(g_wasi_nn_functions.handle, "init_execution_context");
     g_wasi_nn_functions.close_execution_context = (close_execution_context_fn)dlsym(g_wasi_nn_functions.handle, "close_execution_context");
     g_wasi_nn_functions.set_input = (set_input_fn)dlsym(g_wasi_nn_functions.handle, "set_input");
     g_wasi_nn_functions.compute = (compute_fn)dlsym(g_wasi_nn_functions.handle, "compute");
     g_wasi_nn_functions.get_output = (get_output_fn)dlsym(g_wasi_nn_functions.handle, "get_output");
-    g_wasi_nn_functions.load_by_name_with_config = (load_by_name_with_config_fn)dlsym(g_wasi_nn_functions.handle, "load_by_name_with_config");
 	g_wasi_nn_functions.run_inference = (run_inference_fn)dlsym(g_wasi_nn_functions.handle, "run_inference");
-    if (!g_wasi_nn_functions.init_backend ||!g_wasi_nn_functions.deinit_backend  ||
-       !g_wasi_nn_functions.init_execution_context ||!g_wasi_nn_functions.close_execution_context ||
-       !g_wasi_nn_functions.set_input ||!g_wasi_nn_functions.compute ||
-       !g_wasi_nn_functions.get_output	||!g_wasi_nn_functions.load_by_name_with_config ||!g_wasi_nn_functions.run_inference) {
+    if (!g_wasi_nn_functions.init_backend || !g_wasi_nn_functions.deinit_backend ||
+        !g_wasi_nn_functions.load_by_name_with_config || !g_wasi_nn_functions.init_execution_context || 
+        !g_wasi_nn_functions.close_execution_context || !g_wasi_nn_functions.run_inference) {
         dlclose(g_wasi_nn_functions.handle);
         return 1;
     }
@@ -140,20 +140,22 @@ static ERL_NIF_TERM nif_init_execution_context(ErlNifEnv* env, int argc, const E
 {
 	DRV_DEBUG("Init context Start \n" );
     LlamaContext* ctx;
-    char session_id[256];
+    char session_id[256];  // Kept for API compatibility but not used
     
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args_init_execution"));
     }
     
+    // Get the session_id parameter (for API compatibility) but ignore it
     if (!enif_get_string(env, argv[1], session_id, sizeof(session_id), ERL_NIF_LATIN1)) {
-        return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_session_id"));
+        // Even if we can't get the session_id, we still continue as it's not used
+        DRV_DEBUG("Warning: Could not get session_id, but continuing anyway\n");
     }
 
-    if (g_wasi_nn_functions.init_execution_context(ctx->ctx, session_id, &ctx->exec_ctx)!= success) {
+    if (g_wasi_nn_functions.init_execution_context(ctx->ctx, ctx->g, &ctx->exec_ctx)!= success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "init_execution_failed"));
     }
-	DRV_DEBUG("Init context finished for session: %s\n", session_id);
+	DRV_DEBUG("Init context finished\n");
 	return enif_make_tuple2(env, enif_make_atom(env, "ok"), enif_make_ulong(env, ctx->exec_ctx));
 }
 

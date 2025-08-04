@@ -86,7 +86,7 @@ init_backend() ->
 load_by_name_with_config(_Context, _Path, _Config) ->
     erlang:nif_error("NIF library not loaded").
 
-init_execution_context(_Context, _SessionId) ->
+init_execution_context(_Context, _Unused) ->
     erlang:nif_error("NIF library not loaded").
 
 close_execution_context(_Context, _ExecContextId) ->
@@ -242,7 +242,7 @@ init_execution_context_once(Context, SessionId) ->
                     ?event(dev_wasi_nn_nif, {execution_context_already_initialized, SessionId, ModelPath}),
                     {ok, ExecContextId};
                 [] ->
-                    Result = init_execution_context(Context, SessionId),
+                    Result = init_execution_context(Context, unused),
                     case Result of
                         {ok, ExecContextId} ->
                             ets:insert(?CACHE_TAB, {SessionKey, {ok, ExecContextId}}),

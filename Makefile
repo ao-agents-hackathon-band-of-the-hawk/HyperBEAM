@@ -81,15 +81,11 @@ $(WASI_NN_DIR):
 	git clone \
 		https://github.com/apuslabs/wasi_nn_backend.git \
 		$(WASI_NN_DIR) \
-		-b stage/wasi-nn \
+		-b main \
 		--single-branch
 
-$(WASI_NN_DIR)/lib/libwasi_nn_backend.so: $(WASI_NN_DIR) 
-	cmake \
-		$(WAMR_FLAGS) \
-		-S $(WASI_NN_DIR) \
-		-B $(WASI_NN_DIR)/build 
-	make -C $(WASI_NN_DIR)/build -j8
+$(WASI_NN_DIR)/lib/libwasi_nn_backend.so: $(WASI_NN_DIR)
+	make -C $(WASI_NN_DIR) build
 	cp $(WASI_NN_DIR)/build/libwasi_nn_backend.so ./native/wasi_nn_llama
 clean:
 	rebar3 clean
