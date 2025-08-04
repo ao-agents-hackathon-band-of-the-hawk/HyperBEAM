@@ -122,6 +122,7 @@ download_and_store_model(TxID) ->
 load_and_infer(_M1, M2, Opts) ->
     Model = maps:get(<<"model_path">>, M2, <<"">>),
     ModelConfig = maps:get(<<"config">>, M2, "{\"n_gpu_layers\":96,\"ctx_size\":64000,\"batch_size\":64000}"),
+    BackendConfig = maps:get(<<"backend_config">>, M2, undefined),
     Prompt = maps:get(<<"prompt">>, M2),
     UserSessionId = maps:get(<<"session_id">>, M2, undefined),
     Reference = maps:get(<<"reference">>, M2, undefined),
@@ -135,7 +136,7 @@ load_and_infer(_M1, M2, Opts) ->
     
     try
         % Use persistent context management (fast if model already loaded)
-        case dev_wasi_nn_nif:switch_model(binary_to_list(Model), ModelConfig) of
+        case dev_wasi_nn_nif:switch_model(binary_to_list(Model), ModelConfig, BackendConfig) of
             {ok, Context} ->
                 % Create or reuse session-specific execution context
                 case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of

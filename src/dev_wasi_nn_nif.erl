@@ -4,13 +4,17 @@
 -on_load(init/0).
 -export([
     init_backend/0,
+    init_backend_with_config/1,
     load_by_name_with_config/3,
     init_execution_context/2,
     close_execution_context/2,
     deinit_backend/1,
-    run_inference/3
+    run_inference/3,
+    set_input/3,
+    compute/2,
+    get_output/3
 ]).
--export([init_execution_context_once/2, switch_model/2]).
+-export([init_execution_context_once/2, switch_model/2, switch_model/3]).
 -export([cleanup_model_contexts/1, cleanup_all_contexts/0, get_current_model_info/0]).
 
 %% Module-level cache
@@ -83,24 +87,30 @@ init() ->
 init_backend() ->
     erlang:nif_error("NIF library not loaded").
 
+init_backend_with_config(_Config) ->
+    erlang:nif_error("NIF library not loaded").
+
 load_by_name_with_config(_Context, _Path, _Config) ->
     erlang:nif_error("NIF library not loaded").
 
-init_execution_context(_Context, _Unused) ->
+init_execution_context(_Context, _SessionId) ->
     erlang:nif_error("NIF library not loaded").
 
 close_execution_context(_Context, _ExecContextId) ->
     erlang:nif_error("NIF library not loaded").
 
-% set_input(_Context, _Prompt) ->
-%     erlang:nif_error("NIF library not loaded").
+set_input(_Context, _ExecContextId, _Input) ->
+    erlang:nif_error("NIF library not loaded").
 
-% compute(_Context) ->
-%     erlang:nif_error("NIF library not loaded").
-% get_output(_Context) ->
-%     erlang:nif_error("NIF library not loaded").
+compute(_Context, _ExecContextId) ->
+    erlang:nif_error("NIF library not loaded").
+
+get_output(_Context, _ExecContextId, _Index) ->
+    erlang:nif_error("NIF library not loaded").
+
 deinit_backend(_Context) ->
     erlang:nif_error("NIF library not loaded").
+
 run_inference(_Context, _ExecContextId, _Prompt) ->
     erlang:nif_error("NIF library not loaded").
 
@@ -110,6 +120,9 @@ run_inference(_Context, _ExecContextId, _Prompt) ->
 
 %% Switch to a different model, creating a new context for each model
 switch_model(ModelPath, Config) ->
+    switch_model(ModelPath, Config, undefined).
+
+switch_model(ModelPath, Config, BackendConfig) ->
     ensure_cache_table(),
     ModelKey = {?SINGLETON_KEY, model_context, ModelPath},
     
@@ -124,14 +137,14 @@ switch_model(ModelPath, Config) ->
             % Cleanup old context for this model
             deinit_backend(OldContext),
             % Create new context for this model
-            create_model_context(ModelPath, Config);
+            create_model_context(ModelPath, Config, BackendConfig);
         [] ->
             ?event(dev_wasi_nn_nif, {model_not_loaded, ModelPath, creating_new_context}),
-            create_model_context(ModelPath, Config)
+            create_model_context(ModelPath, Config, BackendConfig)
     end.
 
 %% Helper function to create a new model context
-create_model_context(ModelPath, Config) ->
+create_model_context(ModelPath, Config, undefined) ->
     ensure_cache_table(),
     ModelKey = {?SINGLETON_KEY, global_backend, ModelPath},
     
@@ -149,6 +162,27 @@ create_model_context(ModelPath, Config) ->
                     load_model_with_context(Context, ModelPath, Config);
                 Error ->
                     ?event(dev_wasi_nn_nif, {failed_to_create_global_backend, ModelPath, Error}),
+                    Error
+            end
+    end;
+create_model_context(ModelPath, Config, BackendConfig) ->
+    ensure_cache_table(),
+    ModelKey = {?SINGLETON_KEY, global_backend, ModelPath},
+    
+    % Get or create the global backend context for this model with specific backend config
+    case ets:lookup(?CACHE_TAB, ModelKey) of
+        [{_, {ok, Context}}] ->
+            ?event(dev_wasi_nn_nif, {using_existing_global_backend, ModelPath}),
+            load_model_with_context(Context, ModelPath, Config);
+        [] ->
+            ?event(dev_wasi_nn_nif, {creating_new_global_backend_with_config, ModelPath}),
+            case init_backend_with_config(BackendConfig) of
+                {ok, Context} ->
+                    ets:insert(?CACHE_TAB, {ModelKey, {ok, Context}}),
+                    ?event(dev_wasi_nn_nif, {global_backend_created_with_config, ModelPath}),
+                    load_model_with_context(Context, ModelPath, Config);
+                Error ->
+                    ?event(dev_wasi_nn_nif, {failed_to_create_global_backend_with_config, ModelPath, Error}),
                     Error
             end
     end.
@@ -242,7 +276,7 @@ init_execution_context_once(Context, SessionId) ->
                     ?event(dev_wasi_nn_nif, {execution_context_already_initialized, SessionId, ModelPath}),
                     {ok, ExecContextId};
                 [] ->
-                    Result = init_execution_context(Context, unused),
+                    Result = init_execution_context(Context, SessionId),
                     case Result of
                         {ok, ExecContextId} ->
                             ets:insert(?CACHE_TAB, {SessionKey, {ok, ExecContextId}}),
@@ -263,11 +297,12 @@ run_inference_test() ->
     Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
+    BackendConfig = "{\"enable_debug_log\":true}",
     SessionId = "test_session_1",
     Prompt1 = "What is the meaning of life",
     
     % Test 1: Load first model (should create new context)
-    {ok, Context1} = switch_model(Path, Config),
+    {ok, Context1} = switch_model(Path, Config, BackendConfig),
     ?event(dev_wasi_nn_nif, {model_loaded, Context1, Path, Config}),
     
     % Test 2: Create session and run inference
@@ -278,7 +313,7 @@ run_inference_test() ->
     
     % Test 3: Switch to same model (should reuse context)
     StartTime = erlang:system_time(millisecond),
-    {ok, Context1_reused} = switch_model(Path, Config),
+    {ok, Context1_reused} = switch_model(Path, Config, BackendConfig),
     EndTime = erlang:system_time(millisecond),
     ReuseDuration = EndTime - StartTime,
     ?event(dev_wasi_nn_nif, {context_reuse, ReuseDuration}),
@@ -287,8 +322,8 @@ run_inference_test() ->
     {ok, Output2} = run_inference(Context1_reused, ExecContextId1, "Who are you?"),
     ?event(dev_wasi_nn_nif, {run_inference, Context1, ExecContextId1, "Who are you?", Output2}),
     
-    % Test 9: Try to switch to cleaned up model (should create new context)
-    {ok, Context2_new} = switch_model(Path2, Config),
+    % Test 4: Try to switch to cleaned up model (should create new context)
+    {ok, Context2_new} = switch_model(Path2, Config, BackendConfig),
     {ok, ExecContextId3} = init_execution_context_once(Context2_new, "test_session_2"),
     {ok, Output3} = run_inference(Context2_new, ExecContextId3, Prompt1),
     ?event(dev_wasi_nn_nif, {run_inference, Context2_new, ExecContextId3, Prompt1, Output3}),
@@ -296,4 +331,5 @@ run_inference_test() ->
     ?assertNotEqual(Context1, Context2_new), % Should be a new context
     
     % Cleanup all contexts
-    cleanup_all_contexts().
+    cleanup_all_contexts(),
+    ok.

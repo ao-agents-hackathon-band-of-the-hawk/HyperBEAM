@@ -12,10 +12,10 @@
 typedef wasi_nn_error (*init_backend_fn)(void **ctx);
 typedef wasi_nn_error (*init_backend_with_config_fn)(void **ctx, const char *config, uint32_t config_len);
 typedef wasi_nn_error (*deinit_backend_fn)(void *ctx);
-typedef wasi_nn_error (*init_execution_context_fn)(void *ctx, graph g, graph_execution_context *exec_ctx);
-typedef wasi_nn_error (*close_execution_context_fn)(void *ctx, graph_execution_context exec_ctx);
 typedef wasi_nn_error (*load_by_name_with_config_fn)(void *ctx, const char *filename, uint32_t filename_len,
 	const char *config, uint32_t config_len, graph *g);
+typedef wasi_nn_error (*init_execution_context_fn)(void *ctx, const char *session_id, graph_execution_context *exec_ctx);
+typedef wasi_nn_error (*close_execution_context_fn)(void *ctx, graph_execution_context exec_ctx);
 typedef wasi_nn_error (*run_inference_fn)(void *ctx, graph_execution_context exec_ctx, uint32_t index,
 	tensor *input_tensor,tensor_data output_tensor, uint32_t *output_tensor_size, const char *options);
 typedef wasi_nn_error (*set_input_fn)(void *ctx, graph_execution_context exec_ctx, uint32_t index, tensor *tensor);
