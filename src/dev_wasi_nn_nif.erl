@@ -128,9 +128,6 @@ run_inference_with_options(_Context, _ExecContextId, _Prompt, _Options) ->
 
 %% Switch to a different model, creating a new context for each model
 switch_model(ModelPath, Config) ->
-    switch_model(ModelPath, Config, undefined).
-
-switch_model(ModelPath, Config, BackendConfig) ->
     ensure_cache_table(),
     ModelKey = {?SINGLETON_KEY, model_context, ModelPath},
     
@@ -145,14 +142,14 @@ switch_model(ModelPath, Config, BackendConfig) ->
             % Cleanup old context for this model
             deinit_backend(OldContext),
             % Create new context for this model
-            create_model_context(ModelPath, Config, BackendConfig);
+            create_model_context(ModelPath, Config);
         [] ->
             ?event(dev_wasi_nn_nif, {model_not_loaded, ModelPath, creating_new_context}),
-            create_model_context(ModelPath, Config, BackendConfig)
+            create_model_context(ModelPath, Config)
     end.
 
 %% Helper function to create a new model context
-create_model_context(ModelPath, Config, undefined) ->
+create_model_context(ModelPath, Config) ->
     ensure_cache_table(),
     ModelKey = {?SINGLETON_KEY, global_backend, ModelPath},
     
@@ -170,27 +167,6 @@ create_model_context(ModelPath, Config, undefined) ->
                     load_model_with_context(Context, ModelPath, Config);
                 Error ->
                     ?event(dev_wasi_nn_nif, {failed_to_create_global_backend, ModelPath, Error}),
-                    Error
-            end
-    end;
-create_model_context(ModelPath, Config, BackendConfig) ->
-    ensure_cache_table(),
-    ModelKey = {?SINGLETON_KEY, global_backend, ModelPath},
-    
-    % Get or create the global backend context for this model with specific backend config
-    case ets:lookup(?CACHE_TAB, ModelKey) of
-        [{_, {ok, Context}}] ->
-            ?event(dev_wasi_nn_nif, {using_existing_global_backend, ModelPath}),
-            load_model_with_context(Context, ModelPath, Config);
-        [] ->
-            ?event(dev_wasi_nn_nif, {creating_new_global_backend_with_config, ModelPath}),
-            case init_backend_with_config(BackendConfig) of
-                {ok, Context} ->
-                    ets:insert(?CACHE_TAB, {ModelKey, {ok, Context}}),
-                    ?event(dev_wasi_nn_nif, {global_backend_created_with_config, ModelPath}),
-                    load_model_with_context(Context, ModelPath, Config);
-                Error ->
-                    ?event(dev_wasi_nn_nif, {failed_to_create_global_backend_with_config, ModelPath, Error}),
                     Error
             end
     end.
@@ -305,12 +281,11 @@ basic_inference_test() ->
     Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
-    BackendConfig = "{\"enable_debug_log\":true}",
     SessionId = "test_session_1",
     Prompt1 = "What is the meaning of life",
     
     % Test 1: Load first model (should create new context)
-    {ok, Context1} = switch_model(Path, Config, BackendConfig),
+    {ok, Context1} = switch_model(Path, Config),
     ?event(dev_wasi_nn_nif, {model_loaded, Context1, Path, Config}),
     
     % Test 2: Create session and run inference
@@ -328,10 +303,9 @@ session_management_test() ->
     Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
-    BackendConfig = "{\"enable_debug_log\":true}",
     
     % Load model
-    {ok, Context} = switch_model(Path, Config, BackendConfig),
+    {ok, Context} = switch_model(Path, Config),
     
     % Create multiple sessions
     {ok, Session1} = init_execution_context_once(Context, "session_1"),
@@ -378,9 +352,8 @@ inference_with_options_test() ->
     Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
-    BackendConfig = "{\"enable_debug_log\":true}",
     
-    {ok, Context} = switch_model(Path, Config, BackendConfig),
+    {ok, Context} = switch_model(Path, Config),
     
     Prompt = "Write one short sentence about the weather",
     
@@ -412,17 +385,16 @@ model_switching_with_config_test() ->
     Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
     Config1 = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
     Config2 = "{\"n_gpu_layers\":48,\"ctx_size\":1024}",
-    BackendConfig = "{\"enable_debug_log\":true}",
     SessionId = "config_test_session",
     
     % Load model with first config
-    {ok, Context1} = switch_model(Path, Config1, BackendConfig),
+    {ok, Context1} = switch_model(Path, Config1),
     {ok, ExecContextId1} = init_execution_context_once(Context1, SessionId),
     {ok, Output1} = run_inference(Context1, ExecContextId1, "Test with config 1"),
     ?assertNotEqual(Output1, ""),
     
     % Switch to same model with different config
-    {ok, Context2} = switch_model(Path2, Config2, BackendConfig),
+    {ok, Context2} = switch_model(Path2, Config2),
     {ok, ExecContextId2} = init_execution_context_once(Context2, SessionId),
     {ok, Output2} = run_inference(Context2, ExecContextId2, "Test with config 2"),
     ?assertNotEqual(Output2, ""),

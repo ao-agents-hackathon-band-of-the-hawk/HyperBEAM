@@ -222,7 +222,6 @@ load_and_infer(_M1, M2, Opts) ->
     },
     ModelConfig = hb_json:encode(DefaultBaseConfig),
     UserConfig = maps:get(<<"config">>, M2, #{}),
-    BackendConfig = maps:get(<<"backend_config">>, M2, undefined),
     Prompt = maps:get(<<"prompt">>, M2),
     UserSessionId = maps:get(<<"session_id">>, M2, undefined),
     Reference = maps:get(<<"reference">>, M2, undefined),
@@ -236,7 +235,7 @@ load_and_infer(_M1, M2, Opts) ->
     
     try
         % Use persistent context management (fast if model already loaded)
-        case dev_wasi_nn_nif:switch_model(binary_to_list(Model), ModelConfig, BackendConfig) of
+        case dev_wasi_nn_nif:switch_model(binary_to_list(Model), ModelConfig) of
             {ok, Context} ->
                 % Create or reuse session-specific execution context
                 case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of
