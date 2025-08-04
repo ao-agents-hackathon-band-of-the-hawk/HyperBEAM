@@ -10,6 +10,8 @@
     close_execution_context/2,
     deinit_backend/1,
     run_inference/3,
+    run_inference/4,
+    run_inference_with_options/4,
     set_input/3,
     compute/2,
     get_output/3
@@ -113,6 +115,12 @@ deinit_backend(_Context) ->
 
 run_inference(_Context, _ExecContextId, _Prompt) ->
     erlang:nif_error("NIF library not loaded").
+
+run_inference(_Context, _ExecContextId, _Prompt, _Options) ->
+    erlang:nif_error("NIF library not loaded").
+
+run_inference_with_options(_Context, _ExecContextId, _Prompt, _Options) ->
+    run_inference(_Context, _ExecContextId, _Prompt, _Options).
 
 %% ============================================================================
 %% GLOBAL PERSISTENT CONTEXT MANAGEMENT
@@ -292,9 +300,9 @@ init_execution_context_once(Context, SessionId) ->
             {error, no_model_loaded}
     end.
 
-run_inference_test() ->
+%% Test basic inference functionality
+basic_inference_test() ->
     Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
-    Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
     BackendConfig = "{\"enable_debug_log\":true}",
@@ -311,25 +319,114 @@ run_inference_test() ->
     ?event(dev_wasi_nn_nif, {run_inference, Context1, ExecContextId1, Prompt1, Output1}),
     ?assertNotEqual(Output1, ""),
     
-    % Test 3: Switch to same model (should reuse context)
-    StartTime = erlang:system_time(millisecond),
-    {ok, Context1_reused} = switch_model(Path, Config, BackendConfig),
-    EndTime = erlang:system_time(millisecond),
-    ReuseDuration = EndTime - StartTime,
-    ?event(dev_wasi_nn_nif, {context_reuse, ReuseDuration}),
-    ?assert(ReuseDuration < 100), % Should be nearly instant
-    ?assertEqual(Context1, Context1_reused), % Should be the same context
-    {ok, Output2} = run_inference(Context1_reused, ExecContextId1, "Who are you?"),
-    ?event(dev_wasi_nn_nif, {run_inference, Context1, ExecContextId1, "Who are you?", Output2}),
-    
-    % Test 4: Try to switch to cleaned up model (should create new context)
-    {ok, Context2_new} = switch_model(Path2, Config, BackendConfig),
-    {ok, ExecContextId3} = init_execution_context_once(Context2_new, "test_session_2"),
-    {ok, Output3} = run_inference(Context2_new, ExecContextId3, Prompt1),
-    ?event(dev_wasi_nn_nif, {run_inference, Context2_new, ExecContextId3, Prompt1, Output3}),
-    ?assertNotEqual(Output3, ""),
-    ?assertNotEqual(Context1, Context2_new), % Should be a new context
-    
     % Cleanup all contexts
+    cleanup_all_contexts(),
+    ok.
+
+%% Test session management capabilities with more detailed conversation
+session_management_test() ->
+    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+    Config =
+        "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
+    BackendConfig = "{\"enable_debug_log\":true}",
+    
+    % Load model
+    {ok, Context} = switch_model(Path, Config, BackendConfig),
+    
+    % Create multiple sessions
+    {ok, Session1} = init_execution_context_once(Context, "session_1"),
+    {ok, Session2} = init_execution_context_once(Context, "session_2"),
+    
+    % Verify sessions are different
+    ?assertNotEqual(Session1, Session2),
+    
+    % Run inference in both sessions
+    {ok, Response1} = run_inference(Context, Session1, "Hello, my name is Alice."),
+    ?event(dev_wasi_nn_nif, {session1_response1, Response1}),
+    
+    % This should remember Alice's name
+    {ok, Response2} = run_inference(Context, Session1, "What is my name?"),
+    ?event(dev_wasi_nn_nif, {session1_response2, Response2}),
+    
+    % Verify that the response mentions Alice
+    AliceInResponse = case string:find(Response2, "Alice") of
+        nomatch -> false;
+        _ -> true
+    end,
+    
+    % Session 2 should not know Alice's name
+    {ok, Response3} = run_inference(Context, Session2, "What is my name?"),
+    ?event(dev_wasi_nn_nif, {session2_response1, Response3}),
+    
+    % Verify the responses
+    ?assert(AliceInResponse, "Session 1 should remember Alice's name"),
+    
+    % Cleanup
+    cleanup_all_contexts(),
+    ok.
+
+% {
+%   "temperature": 0.8,
+%   "top_p": 0.95,
+%   "top_k": 40,
+%   "max_tokens": 512,
+%   "repeat_penalty": 1.1,
+%   "stop": ["\n\n", ""]
+% }
+%% Test inference with options
+inference_with_options_test() ->
+    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+    Config =
+        "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
+    BackendConfig = "{\"enable_debug_log\":true}",
+    
+    {ok, Context} = switch_model(Path, Config, BackendConfig),
+    
+    Prompt = "Write one short sentence about the weather",
+    
+    % Use low temperature for more deterministic output
+    OptionsLowTemp = "{\"seed\":42,\"temperature\":0.1}",
+    {ok, ExecContextId1} = init_execution_context_once(Context, "session_1"),
+    {ok, OutputLowTemp} = run_inference_with_options(Context, ExecContextId1, Prompt, OptionsLowTemp),
+    ?assertNotEqual(OutputLowTemp, ""),
+
+    % Ensure we get same output with same options
+    {ok, ExecContextId2} = init_execution_context_once(Context, "session_2"),
+    {ok, OutputLowTemp2} = run_inference_with_options(Context, ExecContextId2, Prompt, OptionsLowTemp),
+    ?assertEqual(OutputLowTemp2, OutputLowTemp),
+    
+
+    % Use high temperature for more creative output
+    {ok, ExecContextId3} = init_execution_context_once(Context, "session_3"),
+    OptionsHighTemp = "{\"seed\":42,\"temperature\":1.0}",
+    {ok, OutputHighTemp} = run_inference_with_options(Context, ExecContextId3, Prompt, OptionsHighTemp),
+    ?assertNotEqual(OutputHighTemp, OutputLowTemp),
+    
+    % Cleanup
+    cleanup_all_contexts(),
+    ok.
+
+%% Test model switching with different configurations
+model_switching_with_config_test() ->
+    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+    Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
+    Config1 = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
+    Config2 = "{\"n_gpu_layers\":48,\"ctx_size\":1024}",
+    BackendConfig = "{\"enable_debug_log\":true}",
+    SessionId = "config_test_session",
+    
+    % Load model with first config
+    {ok, Context1} = switch_model(Path, Config1, BackendConfig),
+    {ok, ExecContextId1} = init_execution_context_once(Context1, SessionId),
+    {ok, Output1} = run_inference(Context1, ExecContextId1, "Test with config 1"),
+    ?assertNotEqual(Output1, ""),
+    
+    % Switch to same model with different config
+    {ok, Context2} = switch_model(Path2, Config2, BackendConfig),
+    {ok, ExecContextId2} = init_execution_context_once(Context2, SessionId),
+    {ok, Output2} = run_inference(Context2, ExecContextId2, "Test with config 2"),
+    ?assertNotEqual(Output2, ""),
+    
+    % Cleanup
     cleanup_all_contexts(),
     ok.

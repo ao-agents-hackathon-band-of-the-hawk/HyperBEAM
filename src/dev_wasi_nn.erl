@@ -142,7 +142,7 @@ load_and_infer(_M1, M2, Opts) ->
                 case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of
                     {ok, ExecContextId} ->
                         % Run inference with session-specific context
-                        case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt)) of
+                        case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt), ModelConfig) of
                             {ok, Output} ->
                                 ?event(dev_wasi_nn, {inference_success, Reference}),
                                 {ok, #{

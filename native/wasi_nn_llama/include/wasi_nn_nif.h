@@ -17,7 +17,8 @@ typedef wasi_nn_error (*load_by_name_with_config_fn)(void *ctx, const char *file
 typedef wasi_nn_error (*init_execution_context_fn)(void *ctx, const char *session_id, graph_execution_context *exec_ctx);
 typedef wasi_nn_error (*close_execution_context_fn)(void *ctx, graph_execution_context exec_ctx);
 typedef wasi_nn_error (*run_inference_fn)(void *ctx, graph_execution_context exec_ctx, uint32_t index,
-	tensor *input_tensor,tensor_data output_tensor, uint32_t *output_tensor_size, const char *options);
+	tensor *input_tensor, tensor_data output_tensor, uint32_t *output_tensor_size, 
+	const char *options);
 typedef wasi_nn_error (*set_input_fn)(void *ctx, graph_execution_context exec_ctx, uint32_t index, tensor *tensor);
 typedef wasi_nn_error (*compute_fn)(void *ctx, graph_execution_context exec_ctx);
 typedef wasi_nn_error (*get_output_fn)(void *ctx, graph_execution_context exec_ctx, uint32_t index, tensor_data output, uint32_t *output_size);

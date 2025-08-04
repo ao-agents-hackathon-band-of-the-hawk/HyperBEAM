@@ -48,7 +48,7 @@ static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     g_wasi_nn_functions.deinit_backend = (deinit_backend_fn)dlsym(g_wasi_nn_functions.handle, "deinit_backend");
     g_wasi_nn_functions.load_by_name = (load_by_name_fn)dlsym(g_wasi_nn_functions.handle, "load_by_name");
     g_wasi_nn_functions.load_by_name_with_config = (load_by_name_with_config_fn)dlsym(g_wasi_nn_functions.handle, "load_by_name_with_config");
-    g_wasi_nn_functions.init_execution_context = (init_execution_context_fn)dlsym(g_wasi_nn_functions.handle, "init_execution_context");
+    g_wasi_nn_functions.init_execution_context = (init_execution_context_fn)dlsym(g_wasi_nn_functions.handle, "init_execution_context_with_session_id");
     g_wasi_nn_functions.close_execution_context = (close_execution_context_fn)dlsym(g_wasi_nn_functions.handle, "close_execution_context");
     g_wasi_nn_functions.set_input = (set_input_fn)dlsym(g_wasi_nn_functions.handle, "set_input");
     g_wasi_nn_functions.compute = (compute_fn)dlsym(g_wasi_nn_functions.handle, "compute");
@@ -228,6 +228,7 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
     LlamaContext* ctx;
     unsigned long exec_ctx_id;
     char *input = NULL;
+    char *options = NULL;
     tensor_data output = NULL;
     ERL_NIF_TERM ret_term; // Variable for the return term
     ERL_NIF_TERM result_bin;
@@ -261,6 +262,16 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
         ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_input"));
         goto cleanup;
     }
+    
+    // Get options from the fourth argument if present
+    if (argc > 3) {
+        options = (char *)calloc(MAX_CONFIG_SIZE, sizeof(char));
+        if (!enif_get_string(env, argv[3], options, MAX_CONFIG_SIZE, ERL_NIF_LATIN1)) {
+            DRV_DEBUG("Invalid options\n");
+            ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_options"));
+            goto cleanup;
+        }
+    }
 
     tensor input_tensor = {
         .dimensions = NULL,
@@ -269,7 +280,7 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
     };
     
     // Run inference with session-specific execution context
-    if (g_wasi_nn_functions.run_inference(ctx->ctx, (graph_execution_context)exec_ctx_id, 0, &input_tensor, output, &output_size, NULL) != success) {
+    if (g_wasi_nn_functions.run_inference(ctx->ctx, (graph_execution_context)exec_ctx_id, 0, &input_tensor, output, &output_size, options) != success) {
         ret_term = enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "run_inference_failed"));
         goto cleanup;
     }
@@ -287,6 +298,7 @@ static ERL_NIF_TERM nif_run_inference(ErlNifEnv* env, int argc, const ERL_NIF_TE
 cleanup:
     // Free all allocated memory. free(NULL) is safe.
     free(input);
+    free(options);
     free(output);
     DRV_DEBUG("Clean all");
     return ret_term;
@@ -330,6 +342,8 @@ static ErlNifFunc nif_funcs[] = {
     {"close_execution_context", 2, nif_close_execution_context},
     {"deinit_backend", 1, nif_deinit_backend},
     {"run_inference", 3, nif_run_inference},
+    {"run_inference", 4, nif_run_inference},  // Also support 4 arguments (with options)
+    {"run_inference_with_options", 4, nif_run_inference},  // Alias for run_inference/4
     {"set_input", 3, nif_set_input},
     {"compute", 2, nif_compute},
     {"get_output", 3, nif_get_output}
