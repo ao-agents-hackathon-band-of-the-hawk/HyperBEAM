@@ -16,7 +16,7 @@
     compute/2,
     get_output/3
 ]).
--export([init_execution_context_once/2, switch_model/2, switch_model/3]).
+-export([init_execution_context_once/2, switch_model/2]).
 -export([cleanup_model_contexts/1, cleanup_all_contexts/0, get_current_model_info/0]).
 
 %% Module-level cache
@@ -219,10 +219,7 @@ cleanup_all_contexts() ->
     ensure_cache_table(),
     % Get all model contexts and clean them up
     ModelContexts = ets:match(?CACHE_TAB, {{?SINGLETON_KEY, model_context, '$1'}, {ok, '$2', '$3'}}),
-    lists:foreach(fun([ModelPath, Context, _Config]) ->
-        deinit_backend(Context),
-        ?event(dev_wasi_nn_nif, {cleaned_up_context, ModelPath})
-    end, ModelContexts),
+    
     % Clear the entire cache
     ets:delete_all_objects(?CACHE_TAB),
     ?event(dev_wasi_nn_nif, {all_contexts_cleaned_up}),
