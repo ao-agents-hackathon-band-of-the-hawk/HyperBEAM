@@ -43,6 +43,21 @@ infer(M1, M2, Opts) ->
     end,
     load_and_infer(M1, M2#{<<"model_path">> => <<"models/", ModelPath/binary>>}, Opts).
 
+infer_sec(M1, M2, Opts) ->
+    case dev_cc:generate(#{}, #{nonce => <<"da4a06c3604a5fac8aa0b4aaf5a6354cdd0dc7c193299bc3464f30b5cbfb931a">>}, Opts) of
+        {ok, TokenJSON} ->
+            case infer(M1, M2#{<<"config">> => TokenJSON}, Opts) of
+                {ok, Result} ->
+                    {ok, Result#{<<"X-Attestation">> => TokenJSON}};
+                {error, Reason} ->
+                    ?event(dev_wasi_nn, {infer_sec_failed, Reason}),
+                    {error, {infer_sec_failed, Reason}}
+            end;
+        {error, Reason} ->
+            ?event(dev_wasi_nn, {infer_sec_failed, Reason}),
+            {error, {infer_sec_failed, Reason}}
+    end.
+
 %% @doc Download model from Arweave and store it locally
 download_and_store_model(TxID) ->
     % Configure local storage
