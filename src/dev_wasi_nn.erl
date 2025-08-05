@@ -7,7 +7,7 @@
 %% @doc Exported function for getting device info, controls which functions are
 %% exposed via the device API.
 info(_) -> 
-    #{ exports => [info, infer] }.
+    #{ exports => [info, infer, infer_sec] }.
 
 %% @doc HTTP info response providing information about this device
 info(_Msg1, _Msg2, _Opts) ->
@@ -55,9 +55,15 @@ infer(M1, M2, Opts) ->
 infer_sec(M1, M2, Opts) ->
     case dev_cc:generate(#{}, #{nonce => <<"da4a06c3604a5fac8aa0b4aaf5a6354cdd0dc7c193299bc3464f30b5cbfb931a">>}, Opts) of
         {ok, TokenJSON} ->
-            case infer(M1, M2#{<<"config">> => TokenJSON}, Opts) of
+            case infer(M1, M2, Opts) of
                 {ok, Result} ->
-                    {ok, Result#{<<"X-Attestation">> => TokenJSON}};
+                    ExistingBody = maps:get(<<"body">>, Result, <<"{}">>),
+                    ExistingData = hb_json:decode(ExistingBody),
+                    UpdatedData = ExistingData#{
+                        <<"attestation">> => hb_json:decode(TokenJSON)
+                    },
+                    UpdatedResult = Result#{<<"body">> => hb_json:encode(UpdatedData)},
+                    {ok, UpdatedResult};
                 {error, Reason} ->
                     ?event(dev_wasi_nn, {infer_sec_failed, Reason}),
                     {error, {infer_sec_failed, Reason}}
