@@ -1,7 +1,7 @@
 %%% @doc WASI-NN device implementation for HyperBEAM
 %%% Implements wasi_nn API functions as imported functions by WASM modules
 -module(dev_wasi_nn).
--export([info/1, info/3, infer/3]).
+-export([info/1, info/3, infer/3, infer_sec/3]).
 -include("include/hb.hrl").
 
 %% @doc Exported function for getting device info, controls which functions are
@@ -21,6 +21,15 @@ info(_Msg1, _Msg2, _Opts) ->
                 <<"required_params">> => #{
                     <<"prompt">> => <<"Prompt for Infer">>,
                     <<"model-id">> => <<"Arweave TX ID of the model file">>
+                }
+            },
+            <<"infer_sec">> => #{
+                <<"description">> => <<"AI Inference with Attestation Token">>,
+                <<"method">> => <<"GET or POST">>,
+                <<"required_params">> => #{
+                    <<"prompt">> => <<"Prompt for Infer">>,
+                    <<"model-id">> => <<"Arweave TX ID of the model file">>,
+                    <<"config">> => <<"Attestation token configuration">>
                 }
             }
         }
