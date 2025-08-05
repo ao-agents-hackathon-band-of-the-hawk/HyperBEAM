@@ -41,7 +41,6 @@ infer(M1, M2, Opts) ->
                     DefaultModel
             end
     end,
-    ?event(dev_wasi_nn, {infer, M1, M2, Opts, ModelPath}),
     load_and_infer(M1, M2#{<<"model_path">> => <<"models/", ModelPath/binary>>}, Opts).
 
 %% @doc Download model from Arweave and store it locally
@@ -122,10 +121,8 @@ download_and_store_model(TxID) ->
 load_and_infer(_M1, M2, Opts) ->
     Model = maps:get(<<"model_path">>, M2, <<"">>),
     
-    % Minimal configuration for Gemma 3 model - only essential overrides
-    % Most parameters have sensible defaults in wasi_nn_llama.cpp
+    % Minimal configuration for Gemma 3 model
     DefaultBaseConfig = #{
-        %% Model Configuration - Gemma 3 specific optimizations
         <<"model">> => #{
             <<"n_ctx">> => 8192,               % 8K context window (Gemma 3 sweet spot)
             <<"n_batch">> => 512,              % Optimal batch size for Gemma 3
@@ -137,7 +134,6 @@ load_and_infer(_M1, M2, Opts) ->
             %% - numa: auto-detected
         },
         
-        %% Sampling Configuration - Gemma 3 tuned parameters only
         <<"sampling">> => #{
             <<"temperature">> => 0.7,          % Balanced creativity/coherence for Gemma 3
             <<"top_p">> => 0.9,                % Nucleus sampling 
@@ -171,27 +167,22 @@ load_and_infer(_M1, M2, Opts) ->
             %% <<"grammar">> => <<"">>            % Default: empty
         },
         
-        %% Stopping Criteria - using minimal overrides
         <<"stopping">> => #{
             <<"max_tokens">> => 512            % Reasonable default for most use cases
             %% Other stopping params use defaults:
             %% <<"stop">> => [],                  % Default: empty
             %% <<"ignore_eos">> => false          % Default: false
-        }
+        },
         
-        %% Backend, Memory, Logging, Performance configs commented out - 
-        %% using sensible defaults from wasi_nn_llama.cpp:
-        
-        %% <<"backend">> => #{
-        %%     <<"max_sessions">> => 100,         % Backend handles defaults
+        <<"backend">> => #{
+            <<"max_sessions">> => 2
         %%     <<"idle_timeout_ms">> => 300000,   % Backend handles defaults
         %%     <<"auto_cleanup">> => true,        % Backend handles defaults
-        %%     <<"max_concurrent">> => 8,         % Backend handles defaults
         %%     <<"queue_size">> => 50,            % Backend handles defaults
         %%     <<"default_task_timeout_ms">> => 30000,  % Backend handles defaults
         %%     <<"priority_scheduling_enabled">> => true,
         %%     <<"fair_scheduling_enabled">> => true
-        %% },
+        }
         
         %% <<"memory">> => #{
         %%     <<"context_shifting">> => true,    % Backend handles defaults
@@ -221,7 +212,8 @@ load_and_infer(_M1, M2, Opts) ->
         %% }
     },
     ModelConfig = hb_json:encode(DefaultBaseConfig),
-    UserConfig = maps:get(<<"config">>, M2, #{}),
+    UserConfig = maps:get(<<"config">>, M2, ""),
+    UserConfigStr = hb_util:list(UserConfig),
     Prompt = maps:get(<<"prompt">>, M2),
     UserSessionId = maps:get(<<"session_id">>, M2, undefined),
     Reference = maps:get(<<"reference">>, M2, undefined),
@@ -241,7 +233,7 @@ load_and_infer(_M1, M2, Opts) ->
                 case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of
                     {ok, ExecContextId} ->
                         % Run inference with session-specific context
-                        case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt), UserConfig) of
+                        case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt), UserConfigStr) of
                             {ok, Output} ->
                                 ?event(dev_wasi_nn, {inference_success, Reference}),
                                 {ok, #{

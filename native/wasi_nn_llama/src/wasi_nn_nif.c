@@ -3,7 +3,7 @@
 #define LIB_PATH "./native/wasi_nn_llama/libwasi_nn_backend.so"
 #define MAX_MODEL_PATH 256
 #define MAX_INPUT_SIZE 4096
-#define MAX_CONFIG_SIZE 1024
+#define MAX_CONFIG_SIZE 4096
 #define MAX_OUTPUT_SIZE 8192
 #define MAX_SESSION_ID_SIZE 256
 

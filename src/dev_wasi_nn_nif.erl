@@ -173,7 +173,8 @@ create_model_context(ModelPath, Config) ->
 
 %% Helper function to load model with existing context
 load_model_with_context(Context, ModelPath, Config) ->
-    case load_by_name_with_config(Context, ModelPath, Config) of
+    ConfigStr = hb_util:list(Config),
+    case load_by_name_with_config(Context, ModelPath, ConfigStr) of
         ok ->
             ModelKey = {?SINGLETON_KEY, model_context, ModelPath},
             ets:insert(?CACHE_TAB, {ModelKey, {ok, Context, Config}}),
