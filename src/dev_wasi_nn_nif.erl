@@ -17,12 +17,10 @@
 
 -on_load(init/0).
 -define(NOT_LOADED, not_loaded(?LINE)).
-
 %% Module-level cache
 -define(CACHE_TAB, wasi_nn_cache).
 -define(SINGLETON_KEY, global_cache).
 -define(CACHE_OWNER_NAME, wasi_nn_cache_owner).  % Registered name for cache owner process
-
 %% @doc Start the dedicated ETS table owner process.
 %% Creates a persistent process that owns the ETS table to ensure it remains
 %% available even if the calling process terminates.
@@ -71,15 +69,17 @@ cache_owner_loop() ->
             cache_owner_loop()
     end.
 
-%% Initialize the NIF library and cache management
+%% @doc Initialize the NIF library and cache management.
+%% This function is automatically called when the module is loaded.
+%% It starts the cache owner process and loads the NIF library.
+%%
+%% @returns ok on success, exits with error on failure.
 init() ->
     PrivDir = code:priv_dir(hb),
     Path = filename:join(PrivDir, "wasi_nn"),
     ?event(dev_wasi_nn_nif, {loading_nif_from, Path}),
-    
     % Start the dedicated cache owner process
     start_cache_owner(),
-    
     % Load the NIF library
     case erlang:load_nif(Path, 0) of
         ok ->
@@ -109,13 +109,6 @@ init_execution_context(_Context, _SessionId) ->
 close_execution_context(_Context, _ExecContextId) ->
     ?NOT_LOADED.
 
-% set_input(_Context, _Prompt) ->
-%     erlang:nif_error("NIF library not loaded").
-
-% compute(_Context) ->
-%     erlang:nif_error("NIF library not loaded").
-% get_output(_Context) ->
-%     erlang:nif_error("NIF library not loaded").
 deinit_backend(_Context) ->
     ?NOT_LOADED.
 run_inference(_Context, _ExecContextId, _Prompt) ->
@@ -135,7 +128,6 @@ run_inference(_Context, _ExecContextId, _Prompt) ->
 switch_model(ModelPath, Config) ->
     ensure_cache_table(),
     ModelKey = {?SINGLETON_KEY, model_context, ModelPath},
-    
     case ets:lookup(?CACHE_TAB, ModelKey) of
         [{_, {ok, Context, CachedConfig}}] when CachedConfig =:= Config ->
             ?event(dev_wasi_nn_nif, {model_already_loaded, ModelPath, reusing_context}),
@@ -162,7 +154,6 @@ switch_model(ModelPath, Config) ->
 create_model_context(ModelPath, Config) ->
     ensure_cache_table(),
     ModelKey = {?SINGLETON_KEY, global_backend, ModelPath},
-    
     % Get or create the global backend context for this model
     case ets:lookup(?CACHE_TAB, ModelKey) of
         [{_, {ok, Context}}] ->
@@ -342,31 +333,24 @@ run_inference_test() ->
     % - enable_debug_log: Enable debug logging
     Config =
         "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enable_debug_log\":true}",
-    
     % Session identifier for context management
     SessionId = "test_session_1",
-    
     % Test prompt for inference
     Prompt = "Who are you ?",
-    
     % Step 1: Load the model and create a context
     % This will either create a new context or reuse an existing one
     {ok, Context} = switch_model(Path, Config),
     ?event(dev_wasi_nn_nif, {model_loaded, Context, Path, Config}),
-    
     % Step 2: Create or reuse execution context for the session
     % This ensures session-specific state management
     {ok, ExecContextId} = init_execution_context_once(Context, SessionId),
-    
     % Step 3: Run inference with the provided prompt
     % This is the core inference operation
     {ok, Output} = run_inference(Context, ExecContextId, Prompt),
     ?event(output, Output),
-    
     % Step 4: Validate the inference output
     % Ensure we got a meaningful response
     ?assertNotEqual(Output, ""),
-    
     % Step 5: Clean up all contexts to free resources
     % This is important for memory management
     cleanup_all_contexts(),

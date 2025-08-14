@@ -4,7 +4,7 @@
 %%% Models are cached locally to avoid repeated downloads.
 -module(dev_wasi_nn).
 -export([info/1, info/3, infer/3]).
--export([read_model_by_ID/1]).
+-export([read_model_by_ID/2]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 %% @doc Get device information and exported functions.
@@ -36,7 +36,7 @@ info(_Msg1, _Msg2, _Opts) ->
                 <<"method">> => <<"GET or POST">>,
                 <<"required_params">> => #{
                     <<"prompt">> => <<"Prompt for Infer">>,
-                    <<"model-id">> => <<"Arweave TX ID of the model file">>
+                    <<"model-id">> => <<"Arweave TXID of the model file">>
                 }
             }
         }
@@ -69,7 +69,7 @@ infer(_M1, M2, Opts) ->
         undefined ->
             ?event(dev_wasi_nn, {infer, {fallback_to_default_model}}),
             DefaultTxID = <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
-            case read_model_by_ID(DefaultTxID) of
+            case read_model_by_ID(DefaultTxID, Opts) of
                 {ok, LocalModelPath} ->
                     ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
                     load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
@@ -79,7 +79,7 @@ infer(_M1, M2, Opts) ->
             end;
         _ ->
             ?event(dev_wasi_nn, {infer, {downloading_model, TxID}}),
-            case read_model_by_ID(TxID) of
+            case read_model_by_ID(TxID, Opts) of
                 {ok, LocalModelPath} ->
                     ?event(dev_wasi_nn, {infer, {model_ready, LocalModelPath}}),
                     load_and_infer(LocalModelPath, ModelConfig, Prompt, SessionId, Opts);
@@ -88,36 +88,34 @@ infer(_M1, M2, Opts) ->
                     {error, {model_download_failed, Reason}}
             end
     end.
-
 %%%--------------------------------------------------------------------
 %%% Helper Functions
 %%%--------------------------------------------------------------------
-
-
-
 %% @doc Load model and perform inference using persistent context management.
 %% Handles the complete inference workflow including model loading, session
 %% management, and inference execution. Uses session IDs to maintain context
-%% across multiple requests for improved performance.
+%% across multiple requests for improved performance. If no session ID is
+%% provided, a new unique session ID will be generated.
 %%
 %% @param ModelPath The local file path to the model.
 %% @param ModelConfig JSON configuration string for the model.
 %% @param Prompt The input prompt for inference.
-%% @param ProvidedSessionId Optional session ID for context reuse.
+%% @param ProvidedSessionId Optional session ID for context reuse. If undefined,
+%%        a new session ID will be generated.
 %% @param Opts A map of configuration options.
 %% @returns {ok, #{<<"result">> := Result, <<"session-id">> := SessionId}} on success,
 %%          {error, Reason} on failure.
 load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
     SessionId = case ProvidedSessionId of
-        undefined -> generate_session_id(Opts);
-        _ -> binary_to_list(ProvidedSessionId)
+        undefined -> hb_util:human_id(crypto:strong_rand_bytes(32));
+        _ -> ProvidedSessionId
     end,
     ?event(dev_wasi_nn, {load_and_infer, {model_path, ModelPath}, {session_id, SessionId}}),
         % Use persistent context management (fast if model already loaded)
     case dev_wasi_nn_nif:switch_model(ModelPath, ModelConfig) of
         {ok, Context} ->
             % Create or reuse session-specific execution context
-            case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of
+            case dev_wasi_nn_nif:init_execution_context_once(Context, binary_to_list(SessionId)) of
                 {ok, ExecContextId} ->
                     % Run inference with session-specific context
                     case dev_wasi_nn_nif:run_inference(Context, ExecContextId, binary_to_list(Prompt)) of
@@ -139,6 +137,24 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
             ?event(dev_wasi_nn, {model_load_failed, SessionId, ModelPath, Reason3}),
             {error, Reason3}
     end.
+%% @doc Configure options with model storage settings.
+%% This helper function extends base options with appropriate model storage
+%% configuration. It allows users to customize the model store if desired,
+%% otherwise uses sensible defaults for local filesystem caching.
+%%
+%% @param BaseOpts The base options to extend with model storage configuration.
+%% @returns Extended options map with model store configuration.
+opts(BaseOpts) ->
+    %% Allow user to configure model store, or use default
+    DefaultModelStore = #{
+        <<"store-module">> => hb_store_fs,
+        <<"name">> => <<"model-cache">>
+    },
+    ModelStore = hb_opts:get(model_store, DefaultModelStore, BaseOpts),
+    %% Extend base options with model store configuration
+    BaseOpts#{
+        store => [ModelStore | hb_opts:get(store, [], BaseOpts)]
+    }.
 
 %% @doc Download and retrieve a model by Arweave transaction ID.
 %% This function handles the complete model retrieval workflow including:
@@ -153,51 +169,34 @@ load_and_infer(ModelPath, ModelConfig, Prompt, ProvidedSessionId, Opts) ->
 %% 3. Automatically caches downloaded models locally for future use
 %%
 %% @param TxID The Arweave transaction ID containing the model file as a binary.
+%% @param Opts The base options to extend with model storage configuration.
 %% @returns {ok, LocalFilePath} where LocalFilePath is a string path to the 
 %%          cached model file, or {error, Reason} on failure.
-read_model_by_ID(TxID) ->
+read_model_by_ID(TxID, Opts) ->
     %% Start the HTTP server (required for gateway access)
     hb_http_server:start_node(#{}),
-    %% Configure store with local caching for model files
-    LocalStore = #{
-        <<"store-module">> => hb_store_fs,
-        <<"name">> => <<"model-cache">>
-    },
-    Opts = #{
-        store => [
-            %% Try local cache first
-            LocalStore,
-            #{
-                <<"store-module">> => hb_store_gateway,
-                %% Cache results here
-                <<"local-store">> => LocalStore
-            }
-        ]
-    },
+    %% Configure options with model storage settings
+    ConfiguredOpts = opts(Opts),
     %% Attempt to read the model from cache or download from Arweave
-    case hb_cache:read(TxID, Opts) of
+    case hb_cache:read(TxID, ConfiguredOpts) of
         {ok, Message} ->
             ?event(cache, {successfully_read_message_from_arweave}),
-            
             %% Extract the data reference from the message
             %% This could be either a link to existing cached data or binary data
-            DataLink = maps:get(<<"data">>, Message),
+            DataLink = hb_maps:get(<<"data">>, Message, undefined, ConfiguredOpts),
             ?event(cache, {data_link, DataLink}),
-            
             %% Handle two different data storage formats
             case DataLink of
                 %% Case 1: Data is stored as a link reference to existing cached file
                 {link, DataPath, _LinkOpts} ->
                     ?event(cache, {extracted_data_path, DataPath}),
-                    
                     %% Resolve the relative path to absolute filesystem path
                     %% The store resolves internal paths to actual file locations
-                    ResolvedPath = hb_store:resolve(LocalStore, DataPath),
-                    StoreName = maps:get(<<"name">>, LocalStore),
+                    ResolvedPath = hb_store:resolve(ModelStore, DataPath),
+                    StoreName = hb_maps:get(<<"name">>, ModelStore, undefined, ConfiguredOpts),
                     %% Construct full path: "model-cache/resolved/path/to/file"
                     ActualFilePath = <<StoreName/binary, "/", ResolvedPath/binary>>,
                     ?event(cache, {actual_file_path, ActualFilePath}),
-                    
                     %% Convert binary path to string for external API compatibility
                     StringPath = case is_binary(ActualFilePath) of
                         true -> binary_to_list(ActualFilePath);
@@ -207,24 +206,20 @@ read_model_by_ID(TxID) ->
                 %% Case 2: Data is stored as direct binary content (needs hash-based path)
                 _ ->
                     %% Load the binary data into memory if not already loaded
-                    LoadedData = hb_cache:ensure_loaded(DataLink, Opts),
+                    LoadedData = hb_cache:ensure_loaded(DataLink, ConfiguredOpts),
                     ?event(cache, {loaded_data_size, byte_size(LoadedData)}),
-                    
                     %% Generate content-based hash path for storage location
                     %% This ensures identical files share the same storage location
-                    Hashpath = hb_path:hashpath(LoadedData, Opts),
+                    Hashpath = hb_path:hashpath(LoadedData, ConfiguredOpts),
                     ?event(cache, {calculated_hashpath, Hashpath}),
-                    
                     %% Construct the standardized data path using content hash
                     DataPath = <<"data/", Hashpath/binary>>,
                     ?event(cache, {data_path, DataPath}),
-                    
                     %% Resolve to actual filesystem path and construct full path
-                    ResolvedPath = hb_store:resolve(LocalStore, DataPath),
-                    StoreName = maps:get(<<"name">>, LocalStore),
+                    ResolvedPath = hb_store:resolve(ModelStore, DataPath),
+                    StoreName = hb_maps:get(<<"name">>, ModelStore, undefined, ConfiguredOpts),
                     ActualFilePath = <<StoreName/binary, "/", ResolvedPath/binary>>,
                     ?event(cache, {actual_file_path, ActualFilePath}),
-                    
                     %% Convert binary path to string for external API compatibility
                     StringPath = case is_binary(ActualFilePath) of
                         true -> binary_to_list(ActualFilePath);
@@ -234,25 +229,9 @@ read_model_by_ID(TxID) ->
             end;
         not_found ->
             %% Model transaction ID not found on Arweave network
-            ?event("Message not found on Arweave~n"),
+            ?event({string, <<"Message not found on Arweave">>}),
             {error, not_found}
     end.
-
-
-%% @doc Generate a unique session ID for inference requests.
-%% Creates a unique identifier combining timestamp, random number, and process
-%% information to ensure session uniqueness across concurrent requests.
-%%
-%% @param _Opts Configuration options (currently unused).
-%% @returns A string representing the unique session ID.
-generate_session_id(_Opts) ->
-    Timestamp = erlang:system_time(microsecond),
-    Random = rand:uniform(999999),
-    Pid = self(),
-    SessionId = io_lib:format("req_~p_~p_~p", [Timestamp, Random, Pid]),
-    lists:flatten(SessionId).
-
-
 
 %% @doc Unit test for the complete inference API.
 %% This test validates the end-to-end inference functionality by testing
@@ -281,34 +260,32 @@ infer_test() ->
         <<"model-id">> => <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
         <<"prompt">> => <<"Hello who are you?">>
     },
-    
     % Empty options map for this test
     Opts = #{},
-    
     % Execute the inference API call
     case infer(#{}, M2, Opts) of
         {ok, #{<<"result">> := Result, <<"session-id">> := SessionId}} ->
             % Inference completed successfully
             ?event(dev_wasi_nn, {infer_test, {result, Result}, {session_id, SessionId}}),
-            
             % Validate the inference result
             % Ensure result is a binary and has content
             ?assert(is_binary(Result)),
             ?assert(byte_size(Result) > 0),
-            
             % Validate session ID is present
             ?assert(is_binary(SessionId)),
             ?assert(byte_size(SessionId) > 0);
-            
         {error, Reason} ->
             % Inference failed
             ?event(dev_wasi_nn, {infer_test, {inference_failed, Reason}}),
             ?assert(false, Reason)
     end.
+
+%%% Tests
+
 %% read model ID test
 read_model_by_ID_test() ->
     ID = <<"ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo">>,
-    case read_model_by_ID(ID) of
+    case read_model_by_ID(ID, #{}) of
         {ok, LocalModelPath} ->
             ?event(dev_wasi_nn, {read_model_by_ID_test, {model_ready, LocalModelPath}}),
             ?assert(is_list(LocalModelPath)),
@@ -317,8 +294,3 @@ read_model_by_ID_test() ->
             ?event(dev_wasi_nn, {read_model_by_ID_test, {model_read_failed, Reason}}),
             ?assert(false, {model_read_failed, Reason})
     end.
-
-
-
-
-
