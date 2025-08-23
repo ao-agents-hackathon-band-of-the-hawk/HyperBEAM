@@ -130,10 +130,10 @@ switch_model(ModelPath, Config) ->
             % Update current model reference
             ets:insert(?CACHE_TAB, {{?SINGLETON_KEY, current_model}, {ModelPath, Config, Context}}),
             {ok, Context};
-        [{_, {ok, OldContext, _OldConfig}}] ->
+        [{_, {ok, _OldContext, _OldConfig}}] ->
             ?event(dev_wasi_nn_nif, {model_different_config, ModelPath, reinitializing}),
             % Cleanup old context for this model
-            deinit_backend(OldContext),
+            deinit_backend(_OldContext),
             % Create new context for this model
             create_model_context(ModelPath, Config);
         [] ->
@@ -215,7 +215,7 @@ cleanup_model_contexts(ModelPath) ->
 cleanup_all_contexts() ->
     ensure_cache_table(),
     % Get all model contexts and clean them up
-    ModelContexts =
+    _ModelContexts =
         ets:match(?CACHE_TAB, {{?SINGLETON_KEY, model_context, '$1'}, {ok, '$2', '$3'}}),
 
     % Clear the entire cache

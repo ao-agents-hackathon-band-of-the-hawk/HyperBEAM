@@ -33,7 +33,7 @@ info(_Msg1, _Msg2, _Opts) ->
     {ok, InfoBody}.
 
 infer(M1, M2, Opts) ->
-    TxID = maps:get(<<"model_id">>, M2, undefined),
+    TxID = maps:get(<<"model-id">>, M2, undefined),
     DefaultModel = <<"qwen2.5-14b-instruct-q2_k.gguf">>,
 
     ModelPath =
@@ -89,7 +89,7 @@ download_and_store_model(TxID) ->
         {ok, _ExistingData} ->
             % File already exists locally, no need to download
             ?event(dev_wasi_nn, {model_already_exists, TxID, LocalPath}),
-            {ok, binary_to_list(LocalPath)};
+            {ok, ModelFileName};
         not_found ->
             % File doesn't exist, proceed with download
             try
@@ -106,7 +106,7 @@ download_and_store_model(TxID) ->
                             ok ->
                                 % Return the local file path
                                 ?event(dev_wasi_nn, {model_downloaded, TxID, LocalPath}),
-                                {ok, binary_to_list(LocalPath)};
+                                {ok, ModelFileName};
                             StoreError ->
                                 ?event(dev_wasi_nn, {model_store_failed, TxID, StoreError}),
                                 {error, {store_failed, StoreError}}
@@ -137,7 +137,7 @@ download_and_store_model(TxID) ->
                             ok ->
                                 % Return the local file path
                                 ?event(dev_wasi_nn, {model_downloaded, TxID, LocalPath}),
-                                {ok, binary_to_list(LocalPath)};
+                                {ok, ModelFileName};
                             StoreError ->
                                 ?event(dev_wasi_nn, {model_store_failed, TxID, StoreError}),
                                 {error, {store_failed, StoreError}}
