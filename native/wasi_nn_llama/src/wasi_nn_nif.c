@@ -328,9 +328,20 @@ static ERL_NIF_TERM nif_deinit_backend(ErlNifEnv* env, int argc, const ERL_NIF_T
     if (!enif_get_resource(env, argv[0], llama_context_resource, (void**)&ctx)) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "invalid_args"));
     }
+
+    // Check if the context has already been deinited to prevent double-free
+    if (ctx->ctx == NULL) {
+        return enif_make_atom(env, "ok"); // Already cleaned up, return ok.
+    }
+
     if (g_wasi_nn_functions.deinit_backend(ctx->ctx)!= success) {
         return enif_make_tuple2(env, enif_make_atom(env, "error"), enif_make_atom(env, "deinit_failed"));
     }
+
+    // CRITICAL FIX: Set the context pointer to NULL after deinitialization.
+    // This prevents the resource destructor from freeing it a second time.
+    ctx->ctx = NULL;
+
     return enif_make_atom(env, "ok");
 }
 
