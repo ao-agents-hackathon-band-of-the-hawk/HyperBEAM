@@ -338,11 +338,12 @@ session_management_test() ->
     {ok, Response3} = run_inference(Context, Session2, "What is my name?"),
     ?event(dev_wasi_nn_nif, {session2_response1, Response3}),
 
+    % Cleanup
+    cleanup_all_contexts(),
+
     % Verify the responses
     ?assert(AliceInResponse, "Session 1 should remember Alice's name"),
 
-    % Cleanup
-    cleanup_all_contexts(),
     ok.
 
 % {
