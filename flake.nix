@@ -13,16 +13,6 @@
         erlang = pkgs.beam.interpreters.erlang_27;
         beamPackages = pkgs.beam.packagesWith erlang;
         rebar3 = beamPackages.rebar3;
-
-        # List of packages whose lib paths we want to include automatically
-        libPathPkgs = with pkgs; [
-          zlib
-          stdenv.cc.cc.lib  # For libstdc++.so.6; handles /lib64
-          numactl
-          rocksdb
-          ffmpeg  # Add for PyAV/FFmpeg deps in faster-whisper
-          # Add future deps here, e.g., openblas for CTranslate2 CPU acceleration
-        ];
         
         # Common build inputs
         commonInputs = with pkgs; [
@@ -45,31 +35,36 @@
           gcc-unwrapped.lib
           gawk
           zlib
+          ffmpeg
+          stdenv.cc.cc.lib  # For libstdc++.so.6; handles /lib64
+          uv
         ];
 
         # Platform-specific inputs
         linuxInputs = with pkgs; [ rocksdb numactl ];
         darwinInputs = [ /* Add Darwin-specific if needed */ ];
 
+        totalInputs = commonInputs
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxInputs
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinInputs;
+        
       in {
         devShells.default = pkgs.mkShell {
-          buildInputs = commonInputs
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux linuxInputs
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin darwinInputs;
+         buildInputs = totalInputs;
             
           shellHook = ''
               # Set platform-specific environment
               case "$OSTYPE" in
                 linux*)
-                    export CMAKE_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libPathPkgs}:$CMAKE_LIBRARY_PATH"
+                    export CMAKE_LIBRARY_PATH="${pkgs.lib.makeLibraryPath totalInputs}:$CMAKE_LIBRARY_PATH"
                     unset LD_LIBRARY_PATH  # Clear any inherited paths
-                    export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libPathPkgs}"  # Auto-generated clean path + stubs subdir
+                    export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath totalInputs}"  # Auto-generated clean path + stubs subdir
                     preferred_shell=$(awk -F: -v user="$USER" '$1 == user {print $7}' /etc/passwd)
                     ;;
                 darwin*)
-                    export CMAKE_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libPathPkgs}:$CMAKE_LIBRARY_PATH"
+                    export CMAKE_LIBRARY_PATH="${pkgs.lib.makeLibraryPath totalInputs}:$CMAKE_LIBRARY_PATH"
                     unset LD_LIBRARY_PATH
-                    export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath libPathPkgs}"
+                    export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath totalInputs}"
                     preferred_shell=$(dscl . -read /Users/$USER UserShell 2>/dev/null | cut -d: -f2 | sed 's/^ //')
                     ;;
             esac
