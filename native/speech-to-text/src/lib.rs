@@ -6,6 +6,14 @@ use pyo3::{prelude::*, types::PyModule};
 use pyscripts::*;
 use std::{error::Error, fmt::Debug, i32};
 
+use rustler::{Encoder, Env, Error as RustlerError, NifResult, Term};
+
+mod atoms {
+    rustler::atoms! {
+        ok,
+        error,
+    }
+}
 #[derive(Clone, Debug)]
 pub struct WhisperModel {
     module: Py<PyModule>,
@@ -146,6 +154,44 @@ impl WhisperModel {
         return Ok(Segments(text, segments));
     }
 }
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn transcribe_audio<'a>(env: Env<'a>, path: String) -> NifResult<Term<'a>> {
+    // Use catch_unwind to prevent panics from crashing the BEAM VM
+    match std::panic::catch_unwind(|| {
+        // Initialize with default values; adjust as needed for your setup
+        let config = WhisperConfig::default();
+        WhisperModel::new(
+            "base.en".to_string(),
+            "cpu".to_string(),
+            "int8".to_string(),
+            config,
+        )?
+        .transcribe(path)
+    }) {
+        Ok(Ok(transcript)) => {
+            // Return the transcribed text
+            Ok((atoms::ok(), transcript.to_string()).encode(env))
+        }
+        Ok(Err(e)) => {
+            // Log the error to terminal
+            eprintln!("Transcription error: {:?}", e);
+            // Return error tuple
+            Ok((atoms::error(), e.to_string()).encode(env))
+        }
+        Err(panic) => {
+            // Handle panic: log and return error
+            let panic_msg = match panic.downcast::<String>() {
+                Ok(msg) => *msg,
+                Err(_) => "Unknown panic".to_string(),
+            };
+            eprintln!("Panic during transcription: {}", panic_msg);
+            Err(RustlerError::Term(Box::new(panic_msg)))
+        }
+    }
+}
+
+rustler::init!("dev_speech_to_text_nif");
 
 #[test]
 fn create_test() {

@@ -11,6 +11,13 @@ publish = true
 keywords = ["speech_to_text", "open-ai", "whisper", "faster", "stt"]
 categories = ["science", "api-bindings"]
 
+[lib]
+name = "speech_to_text"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
+anyhow = "1.0.99"
 derive_builder = "0.20.0"
-pyo3 = {version="0.21.2", features=["auto-initialize"]}
+pyo3 = { version = "0.21.2", features = ["auto-initialize"] }
+rustler = "0.36.2"

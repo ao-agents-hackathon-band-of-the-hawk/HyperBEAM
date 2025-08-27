@@ -173,7 +173,8 @@ default_message() ->
             #{<<"name">> => <<"wasm-64@1.0">>, <<"module">> => dev_wasm},
             #{<<"name">> => <<"wasi-nn@1.0">>, <<"module">> => dev_wasi_nn},
             #{<<"name">> => <<"whois@1.0">>, <<"module">> => dev_whois},
-            #{<<"name">> => <<"private@1.0">>, <<"module">> => dev_private}
+            #{<<"name">> => <<"private@1.0">>, <<"module">> => dev_private},
+            #{<<"name">> => <<"speech-to-text@1.0">>, <<"module">> => dev_speech_to_text}
         ],
         %% Default execution cache control options
         cache_control => [<<"no-cache">>, <<"no-store">>],

@@ -55,6 +55,7 @@
          buildInputs = totalInputs;
             
           shellHook = ''
+              export LD_PRELOAD="${pkgs.python3}/lib/libpython3.12.so"
               # Set platform-specific environment
               case "$OSTYPE" in
                 linux*)
