@@ -38,6 +38,8 @@
           ffmpeg
           stdenv.cc.cc.lib  # For libstdc++.so.6; handles /lib64
           uv
+          ccache  # Added for compatible ccache
+          tbb  # Added for compatible oneTBB/libtbb
         ];
 
         # Platform-specific inputs
