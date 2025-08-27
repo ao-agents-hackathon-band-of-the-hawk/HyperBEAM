@@ -17,7 +17,7 @@ transcribe_audio(_) ->
 -ifdef(TEST).
 
 basic_transcription_test() ->
-    Path = <<"native/speech-to-text/src/man.mp3">>,  % Use binary instead of list
+    Path = <<"native/speech_to_text/src/man.mp3">>,  % Use binary instead of list
     Result = transcribe_audio(Path),
     case Result of
         {ok, Transcription} ->
