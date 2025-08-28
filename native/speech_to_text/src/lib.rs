@@ -195,7 +195,15 @@ rustler::init!("dev_speech_to_text_nif");
 
 #[test]
 fn create_test() {
-    let fw = WhisperModel::default();
+    // Create a model that uses CUDA instead of using the default
+    let fw = WhisperModel::new(
+        "base.en".to_string(),
+        "cuda".to_string(),
+        "float16".to_string(), // float16 is generally better for CUDA performance
+        WhisperConfig::default(),
+    )
+    .unwrap();
+
     let trans = fw.transcribe(get_path("./man.mp3".to_string())).unwrap();
     println!("{}", trans.to_string());
     assert!(!trans.0.is_empty());
