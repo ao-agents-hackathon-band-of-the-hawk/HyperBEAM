@@ -6,6 +6,7 @@ use pyo3::{prelude::*, types::PyModule};
 use pyscripts::*;
 use std::{error::Error, fmt::Debug, i32};
 
+use lazy_static::lazy_static;
 use rustler::{Encoder, Env, Error as RustlerError, NifResult, Term};
 
 mod atoms {
@@ -47,6 +48,20 @@ impl Debug for Segments {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+lazy_static! {
+    static ref MODEL: WhisperModel = {
+        // Optional: Add logging to confirm one-time load
+        eprintln!("Loading Whisper model...");
+        let config = WhisperConfig::default();
+        WhisperModel::new(
+            "base.en".to_string(),
+            "cpu".to_string(),
+            "int8".to_string(),
+            config,
+        ).expect("Failed to load Whisper model")
+    };
 }
 
 impl Default for WhisperModel {
@@ -158,17 +173,7 @@ impl WhisperModel {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn transcribe_audio<'a>(env: Env<'a>, path: String) -> NifResult<Term<'a>> {
     // Use catch_unwind to prevent panics from crashing the BEAM VM
-    match std::panic::catch_unwind(|| {
-        // Initialize with default values; adjust as needed for your setup
-        let config = WhisperConfig::default();
-        WhisperModel::new(
-            "base.en".to_string(),
-            "cpu".to_string(),
-            "int8".to_string(),
-            config,
-        )?
-        .transcribe(path)
-    }) {
+    match std::panic::catch_unwind(|| MODEL.transcribe(path)) {
         Ok(Ok(transcript)) => {
             // Return the transcribed text
             Ok((atoms::ok(), transcript.to_string()).encode(env))
@@ -191,7 +196,13 @@ fn transcribe_audio<'a>(env: Env<'a>, path: String) -> NifResult<Term<'a>> {
     }
 }
 
-rustler::init!("dev_speech_to_text_nif");
+fn load(_env: Env, _info: Term) -> bool {
+    // Force lazy initialization of the model during NIF load
+    let _ = &*MODEL;
+    true
+}
+
+rustler::init!("dev_speech_to_text_nif", load = load);
 
 #[test]
 fn create_test() {
