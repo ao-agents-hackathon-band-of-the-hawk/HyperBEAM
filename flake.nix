@@ -76,9 +76,9 @@
             fi
 
             echo "Setting up Python virtual environment..."
-            if [ ! -d "venv" ]; then
-              ${pkgs.python3}/bin/python3 -m venv venv
-              venv/bin/pip install mkdocs mkdocs-material mkdocs-git-revision-date-localized-plugin faster-whisper
+            if [ ! -d ".venv" ]; then
+              ${pkgs.python3}/bin/python3 -m venv .venv
+              ${pkgs.uv}/bin/uv pip install -r requirements.txt
               echo "Virtual environment created and packages installed."
             fi            
 
