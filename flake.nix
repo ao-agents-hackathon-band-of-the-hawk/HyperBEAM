@@ -9,7 +9,7 @@
   outputs = { self, nixpkgs, flake-utils }: 
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; config.allowUnfree = true;};
+        pkgs = import nixpkgs { inherit system; config.allowUnfree = true; config.cudaSupport = true;};
         erlang = pkgs.beam.interpreters.erlang_27;
         beamPackages = pkgs.beam.packagesWith erlang;
         rebar3 = beamPackages.rebar3;
@@ -43,7 +43,7 @@
         ];
 
         # Platform-specific inputs
-        linuxInputs = with pkgs; [ rocksdb numactl cudaPackages.cudnn cudaPackages.libcublas];
+        linuxInputs = with pkgs; [ rocksdb numactl cudaPackages.cudatoolkit cudaPackages.cudnn cudaPackages.libcublas];
         darwinInputs = [ /* Add Darwin-specific if needed */ ];
 
         totalInputs = commonInputs
