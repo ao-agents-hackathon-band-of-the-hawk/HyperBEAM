@@ -110,6 +110,14 @@ impl WhisperModel {
         }
     }
 
+    fn clean_transcription_text(text: String) -> String {
+        if text.starts_with(" None") && text.len() > 5 {
+            text[6..].to_string()
+        } else {
+            text
+        }
+    }
+
     pub fn transcribe(&self, path: String) -> Result<Segments, Box<dyn Error>> {
         let segments = Python::with_gil(|py| {
             let vad = (
@@ -166,6 +174,9 @@ impl WhisperModel {
             text.push_str(&segment.text);
         }
 
+        // Clean up the text by removing "None" after first whitespace
+        text = Self::clean_transcription_text(text);
+
         return Ok(Segments(text, segments));
     }
 }
@@ -203,6 +214,16 @@ fn load(_env: Env, _info: Term) -> bool {
 }
 
 rustler::init!("dev_speech_to_text_nif", load = load);
+
+#[test]
+fn test_clean_transcription_text() {
+    // Test with real transcription that has " None" prefix
+    let input = " None. Welcome everyone to the first episode".to_string();
+    println!("Input: '{}'", input);
+    let result = WhisperModel::clean_transcription_text(input);
+    println!("Output: '{}'", result);
+    assert_eq!(result, " Welcome everyone to the first episode");
+}
 
 #[test]
 fn create_test() {
