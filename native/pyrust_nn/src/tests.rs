@@ -6,7 +6,7 @@ mod tests {
 
     fn setup_params() -> HashMap<String, String> {
         let mut params = HashMap::new();
-        params.insert("model_name".to_string(), "Qwen/Qwen3-0.6B".to_string());
+        params.insert("model_name".to_string(), "models/Qwen/Qwen2.5-1.5B".to_string());
         params.insert("dataset_path".to_string(), "/content/data.txt".to_string());
         params.insert("prompt".to_string(), "Test prompt".to_string());
         params.insert("precision".to_string(), "8-bit".to_string());

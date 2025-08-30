@@ -50,17 +50,17 @@ fn main() -> PyResult<()> {
         // Similarly for other functions...
         let lora_mod = PyModule::import(py, "finetuning_lora")?;
         let lora_func = lora_mod.getattr("fine_tune_lora")?;
-        //lora_func.call1((py_params.clone(),))?;
+        lora_func.call1((py_params.clone(),))?;
 
         // Inference
         let inf_mod = PyModule::import(py, "inference")?;
         let inf_func = inf_mod.getattr("run_inference")?;
-        //inf_func.call1((py_params.clone(),))?;
+        inf_func.call1((py_params.clone(),))?;
 
         // Quantize
         let quant_mod = PyModule::import(py, "quant")?;
         let quant_func = quant_mod.getattr("quantize_model")?;
-        //quant_func.call1((py_params.clone(),))?;
+        quant_func.call1((py_params.clone(),))?;
 
         // LoRA to GGUF
         let lora_gguf_mod = PyModule::import(py, "lora_to_gguf")?;

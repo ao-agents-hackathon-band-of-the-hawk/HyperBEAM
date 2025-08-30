@@ -9,7 +9,7 @@ def lora_to_gguf(params):
     if "adapter_path" not in params:
         raise ValueError("Adapter path not provided. Please specify 'adapter_path' in params.")
     
-    model_name = params.get("model_name", "Qwen/Qwen3-0.6B")
+    model_name = params.get("model_name", "Qwen/Qwen2.5-1.5B-Instruct")
     adapter_path = os.path.abspath(params["adapter_path"])
     gguf_output_path_lora = os.path.join(adapter_path, params.get("gguf_output_path_lora", "lora.gguf"))
     

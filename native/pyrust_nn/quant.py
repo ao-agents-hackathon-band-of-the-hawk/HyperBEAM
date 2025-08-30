@@ -9,7 +9,7 @@ def get_model_memory_footprint(model):
 
 def quantize_model(params):
     """Quantizes model to specified precision and saves it locally."""
-    model_name = params.get("model_name", "Qwen/Qwen3-0.6B")
+    model_name = params.get("model_name", "Qwen/Qwen2.5-1.5B-Instruct")
     precision = params.get("precision", "8-bit")
     prompt = params.get("prompt", "The future of artificial intelligence is")
     quant_output_dir = params.get("quant_output_dir", f"models/quant/{precision}")
