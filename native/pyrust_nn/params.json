@@ -1,0 +1,23 @@
+{
+  "model_name": "Qwen/Qwen3-0.6B",
+  "dataset_path": "data.txt",
+  "dataset_type": "text",
+  "text_column": "text",
+  "output_dir": "models/finetuned",  
+  "output_lora_dir": "models/lora_adapter",
+  "adapter_path" : "models/lora_adapter",
+  "num_epochs": 1,
+  "batch_size": 2,
+  "learning_rate": 2e-5,
+  "lora_rank": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "checkpoint": null,
+  "sample_start": 0,
+  "max_length": 512,
+  "prompt": "What is the capital of France?",
+  "precision": "16-bit",
+  "quant_output_dir": "models/quant",
+  "gguf_output_path_lora": "lora.gguf" ,
+  "gguf_output_path_model": "model.gguf"  
+}

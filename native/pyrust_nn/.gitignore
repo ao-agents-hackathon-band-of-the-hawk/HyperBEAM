@@ -1,0 +1,14 @@
+/target
+llama.cpp
+__pycache__
+*.lock
+*codebase.md
+exit
+models
+.venv
+test_lora
+temp_model
+temp_merged
+*.gguf
+*.log
+!*.json
