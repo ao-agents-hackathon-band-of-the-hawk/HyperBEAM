@@ -15,8 +15,13 @@ sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libssl-dev \
     sudo \
     curl \
-    ca-certificates python3.12 python3.12-venv python3.12-dev libpython3.12-dev zsh uv zlib cudnn9-cuda-12
+    ca-certificates python3.12 python3.12-venv python3.12-dev libpython3.12-dev zsh zlib1g-dev cudnn9-cuda-12
     
+#install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+#source uv
+source $HOME/.local/bin/env
+
 # Build and Install Erlang/OTP
 git clone --depth=1 --branch maint-27 https://github.com/erlang/otp.git && \
     cd otp && \
