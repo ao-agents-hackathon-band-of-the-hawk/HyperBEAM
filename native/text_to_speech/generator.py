@@ -114,7 +114,12 @@ class Generator:
         max_audio_length_ms: float = 90_000,
         temperature: float = 0.9,
         topk: int = 50,
+        seed: int = 42,
     ) -> torch.Tensor:
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
         self._model.reset_caches()
 
         max_generation_len = int(max_audio_length_ms / 80)

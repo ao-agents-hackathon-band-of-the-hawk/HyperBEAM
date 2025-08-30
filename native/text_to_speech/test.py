@@ -2,11 +2,6 @@ from generator import load_csm_1b
 import torchaudio
 import torch
 
-seed = 42
-
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
 
 if torch.backends.mps.is_available():
     device = "mps"
