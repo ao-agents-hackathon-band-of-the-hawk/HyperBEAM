@@ -2,9 +2,12 @@
 
 sudo apt-get update && sudo apt-get install curl -y --no-install-recommends
 
-curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-cuda-keyring.gpg
+curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub | sudo gpg --dearmor --yes -o /usr/share/keyrings/nvidia-cuda-keyring.gpg
 
 echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" | sudo tee /etc/apt/sources.list.d/cuda-repository.list
+
+# for python 3.12
+sudo add-apt-repository -y ppa:deadsnakes/ppa
 
 sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     build-essential \
