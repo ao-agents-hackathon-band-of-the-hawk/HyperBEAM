@@ -53,10 +53,12 @@ def data_loader(dataset_path, tokenizer, sample_start=0, max_length=512):
 
 def fine_tune_lora(params):
     """LoRA fine-tuning function."""
-    # --- (All parameters remain the same) ---
-    model_name = params.get("model_name", "Qwen/Qwen2.5-1.5B-Instruct")
+    model_name = params.get("model_name", "Qwen/Qwen1.5-1.8B-Chat")
+    # --- START: CORRECTED LOGIC ---
+    # Define the path for an OPTIONAL local cache. The script will no longer create this directory.
     local_base_dir = "models/base"
     local_path = os.path.join(local_base_dir, model_name.replace("/", "--"))
+    # --- END: CORRECTED LOGIC ---
     dataset_path = params["dataset_path"]
     output_lora_dir = params.get("output_lora_dir", "lora_adapter")
     num_epochs = params.get("num_epochs", 3)
@@ -65,25 +67,26 @@ def fine_tune_lora(params):
     lora_rank = params.get("lora_rank", 16)
     lora_alpha = params.get("lora_alpha", 32)
     lora_dropout = params.get("lora_dropout", 0.05)
-    lora_adapter_path = params.get("lora_adapter_path", None)
+    lora_adapter_path = params.get("checkpoint_lora", None)
     sample_start = params.get("sample_start", 0)
     max_length = params.get("max_length", 512)
     
     print(f"Loading model and tokenizer for: {model_name}")
 
+    # --- START: MODIFIED MODEL LOADING ---
+    # This logic now checks for an optional local directory.
+    # If it doesn't exist, it loads from the Hub without saving a new copy.
     if os.path.isdir(local_path):
         logger.info(f"Loading local model and tokenizer from {local_path}")
         model = AutoModelForCausalLM.from_pretrained(local_path, device_map="auto", torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(local_path)
     else:
-        logger.info(f"Downloading model and tokenizer from Hugging Face: {model_name}")
+        logger.info(f"Local model not found. Downloading from Hugging Face Hub: {model_name}")
+        # Load directly from the Hub. This will use the central Hugging Face cache
+        # without creating the 'models/base' directory in your project.
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        
-        logger.info(f"Saving base model to {local_path} for future use.")
-        os.makedirs(local_path, exist_ok=True)
-        model.save_pretrained(local_path)
-        tokenizer.save_pretrained(local_path)
+    # --- END: MODIFIED MODEL LOADING ---
 
     if tokenizer.pad_token is None:
         logger.info("Setting pad_token to eos_token")
@@ -112,30 +115,22 @@ def fine_tune_lora(params):
         peft_model = get_peft_model(model, lora_config)
         peft_model.print_trainable_parameters()
         
-    # --- START: MOVED AND CORRECTED LOGIC ---
-    # Compile the model *after* applying PEFT adapters
-    try:
-        peft_model = torch.compile(peft_model)
-        print("PEFT model compiled successfully.")
-    except Exception as e:
-        print(f"PEFT model compilation failed with error: {e}")
-        print("Proceeding without compilation.")
-    # --- END: MOVED AND CORRECTED LOGIC ---
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-    
+    torch.set_float32_matmul_precision('high')
     training_args = TrainingArguments(
         output_dir=output_lora_dir, 
         num_train_epochs=num_epochs, 
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=4,
         learning_rate=learning_rate, 
-        fp16=torch.cuda.is_available(), 
+        bf16=torch.cuda.is_available(), 
         logging_steps=10,
         save_strategy="epoch", 
         report_to="none", 
         remove_unused_columns=False,
         save_total_limit=1,
+        label_names=["labels"]
     )
     
     logger.info("Starting training...")
@@ -152,6 +147,7 @@ def fine_tune_lora(params):
     tokenizer.save_pretrained(output_lora_dir)
     
     logger.info(f"Training completed. LoRA adapter saved to {output_lora_dir}")
+    print(f"Training completed. LoRA adapter saved to {output_lora_dir}")
     return output_lora_dir
 
 # --- (if __name__ == "__main__" block remains the same) ---
@@ -160,6 +156,7 @@ if __name__ == "__main__":
         "dataset_path": "data.json", 
         "output_lora_dir": "models/lora_adapter",
         "max_length": 512,
+        "num_epochs": 500,
         "batch_size": 1
     }
     fine_tune_lora(sample_params)

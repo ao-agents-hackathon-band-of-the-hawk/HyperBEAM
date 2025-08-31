@@ -11,6 +11,9 @@ def lora_to_gguf(params):
     
     model_name = params.get("model_name", "Qwen/Qwen1.5-1.8B-Chat")
     adapter_path = os.path.abspath(params["adapter_path"])
+    gguf_precision = params.get("gguf_precision", "f16")
+    if gguf_precision not in ["f32", "f16", "bf16", "q8_0", "auto"]:
+        raise ValueError(f"Invalid gguf_precision '{gguf_precision}'. Supported values are: f32, f16, bf16, q8_0, auto")
     gguf_output_path_lora = os.path.join(adapter_path, params.get("gguf_output_path_lora", "lora.gguf"))
     
     if not os.path.isdir(adapter_path):
@@ -33,7 +36,7 @@ def lora_to_gguf(params):
                 adapter_path,
                 "--base", temp_base_dir,
                 "--outfile", gguf_output_path_lora,
-                "--outtype", "f16"
+                "--outtype", gguf_precision
             ], check=True)
             print(f"Converted LoRA to GGUF at {gguf_output_path_lora}")
         except subprocess.CalledProcessError as e:
@@ -44,5 +47,5 @@ def lora_to_gguf(params):
     return gguf_output_path_lora
 
 if __name__ == "__main__":
-    sample_params = {"adapter_path": "models/lora_adapter"}
+    sample_params = {"adapter_path": "models/lora_adapter", "gguf_precision": "q8_0"}
     lora_to_gguf(sample_params)
