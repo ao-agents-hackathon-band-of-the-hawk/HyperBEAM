@@ -43,5 +43,5 @@ def model_to_gguf(params):
     return gguf_output_path_model
 
 if __name__ == "__main__":
-    sample_params = {"model_name": "Qwen/Qwen2.5-1.5B-Instruct", "gguf_output_path_model": "models/model.gguf"}
+    sample_params = {"model_name": "Qwen/Qwen1.5-1.8B-Chat", "gguf_output_path_model": "models/model.gguf"}
     model_to_gguf(sample_params)
