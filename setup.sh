@@ -6,9 +6,6 @@ curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x
 
 echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" | sudo tee /etc/apt/sources.list.d/cuda-repository.list
 
-# for python 3.12
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-
 sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -18,7 +15,7 @@ sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libssl-dev \
     sudo \
     curl \
-    ca-certificates python3.12 python3.12-venv python3.12-dev libpython3.12-dev zsh zlib1g-dev cudnn9-cuda-12
+    ca-certificates python3.12 python3.12-venv python3.12-dev libpython3.12-dev zsh zlib1g-dev cudnn9-cuda-12 cuda-toolkit-12-4
 
 # Build and Install Erlang/OTP
 if [ -z "$(erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().' 2>/dev/null)" ]; then \
