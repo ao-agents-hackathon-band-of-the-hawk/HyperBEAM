@@ -1,8 +1,9 @@
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 def run_inference(params):
     """Runs inference on a model."""
-    model_name = params.get("model_name", "Qwen/Qwen2.5-1.5B-Instruct")
+    model_name = params.get("model_name", "Qwen/Qwen1.5-1.8B-Chat")
     prompt = params.get("prompt", "Give me a short introduction to large language model.")
     max_new_tokens = params.get("max_new_tokens", 512)
     
@@ -14,6 +15,14 @@ def run_inference(params):
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
     print("Model loaded.")
     
+    try:
+        model = torch.compile(model)
+        print("Model compiled successfully.")
+    except Exception as e:
+        print(f"Model compilation failed with error: {e}")
+        print("Proceeding without compilation.")
+
+
     messages = [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=True)
     model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
