@@ -6,9 +6,6 @@ curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x
 
 echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" | sudo tee /etc/apt/sources.list.d/cuda-repository.list
 
-# for python 3.12
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-
 sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -18,7 +15,7 @@ sudo apt-get update && sudo apt-get install -y --no-install-recommends \
     libssl-dev \
     sudo \
     curl \
-    ca-certificates python3.12 python3.12-venv python3.12-dev libpython3.12-dev zsh zlib1g-dev cudnn9-cuda-12
+    ca-certificates python3.12 python3.12-venv python3.12-dev libpython3.12-dev zsh zlib1g-dev cudnn9-cuda-12 cuda-toolkit-12-4
 
 # Build and Install Erlang/OTP
 if [ -z "$(erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().' 2>/dev/null)" ]; then \
@@ -62,3 +59,36 @@ export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libpython3.12.so
 python3.12 -m venv .venv
 uv pip install -r requirements.txt
 source .venv/bin/activate
+
+if [ -d "/usr/local/cuda-12.4/bin" ]; then
+    echo "CUDA bin directory exists."
+    if [[ ":$PATH:" != *":/usr/local/cuda-12.4/bin:"* ]]; then
+        echo "CUDA bin not in PATH."
+        if ! grep -q 'export PATH="/usr/local/cuda-12.4/bin:$PATH"' .venv/bin/activate; then
+            echo "Adding CUDA bin to PATH in activate script."
+            echo 'export PATH="/usr/local/cuda-12.4/bin:$PATH"' >> .venv/bin/activate
+        else
+            echo "CUDA bin export already in activate script."
+        fi
+    else
+        echo "CUDA bin already in PATH."
+    fi
+else
+    echo "CUDA bin directory does not exist."
+fi
+if [ -d "/usr/local/cuda-12.4/lib64" ]; then
+    echo "CUDA lib64 directory exists."
+    if [[ ":$LD_LIBRARY_PATH:" != *":/usr/local/cuda-12.4/lib64:"* ]]; then
+        echo "CUDA lib64 not in LD_LIBRARY_PATH."
+        if ! grep -q 'export LD_LIBRARY_PATH="/usr/local/cuda-12.4/lib64:$LD_LIBRARY_PATH"' .venv/bin/activate; then
+            echo "Adding CUDA lib64 to LD_LIBRARY_PATH in activate script."
+            echo 'export LD_LIBRARY_PATH="/usr/local/cuda-12.4/lib64:$LD_LIBRARY_PATH"' >> .venv/bin/activate
+        else
+            echo "CUDA lib64 export already in activate script."
+        fi
+    else
+        echo "CUDA lib64 already in LD_LIBRARY_PATH."
+    fi
+else
+    echo "CUDA lib64 directory does not exist."
+fi
