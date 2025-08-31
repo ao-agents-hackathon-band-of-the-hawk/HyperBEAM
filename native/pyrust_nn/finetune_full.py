@@ -1,8 +1,73 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer , AutoConfig
 from datasets import load_dataset, Dataset
 import json
 import gc
+import os
+from collections import OrderedDict
+from safetensors.torch import load_file
+
+# --- NEW HELPER FUNCTION ---
+def clean_compiled_model_inplace(model_dir):
+    """
+    Loads a model's state_dict saved by a Trainer after torch.compile,
+    strips the '_orig_mod.' prefix, and saves the cleaned model back,
+    making it compatible with conversion scripts.
+    This version manually loads the state_dict to ensure cleaning happens.
+    """
+    print(f"--- Cleaning compiled model artifacts in {model_dir} ---")
+
+    # Find the state dictionary file. It could be .safetensors or .bin
+    state_dict_path = None
+    safetensors_path = os.path.join(model_dir, 'model.safetensors')
+    bin_path = os.path.join(model_dir, 'pytorch_model.bin')
+
+    if os.path.exists(safetensors_path):
+        state_dict_path = safetensors_path
+        # Use safetensors loader
+        original_state_dict = load_file(state_dict_path)
+        print("Loaded state_dict from model.safetensors")
+    elif os.path.exists(bin_path):
+        state_dict_path = bin_path
+        # Use torch loader
+        original_state_dict = torch.load(state_dict_path, map_location="cpu")
+        print("Loaded state_dict from pytorch_model.bin")
+    else:
+        print("Could not find a model state_dict file (.safetensors or .bin). Skipping cleaning.")
+        return
+
+    # Create a new, clean state dictionary
+    cleaned_state_dict = OrderedDict()
+    prefix = '_orig_mod.'
+
+    if not any(key.startswith(prefix) for key in original_state_dict.keys()):
+        print("Model does not appear to be compiled. No cleaning needed.")
+        return
+
+    print("Stripping '_orig_mod.' prefix from tensor names...")
+    for key, value in original_state_dict.items():
+        if key.startswith(prefix):
+            new_key = key[len(prefix):]  # This removes the prefix
+            cleaned_state_dict[new_key] = value
+        # We explicitly discard non-prefixed keys if any prefixed ones exist,
+        # as they are likely the un-trained, newly initialized ones.
+        elif not any(k.startswith(prefix) for k in original_state_dict.keys()):
+             cleaned_state_dict[key] = value
+
+    # Load the model config, then create a fresh model instance
+    config = AutoConfig.from_pretrained(model_dir)
+    fresh_model = AutoModelForCausalLM.from_config(config)
+    
+    # Load our cleaned weights into the fresh model
+    fresh_model.load_state_dict(cleaned_state_dict)
+    
+    # Save the clean model, overwriting the compiled version
+    print(f"Saving cleaned model back to {model_dir}...")
+    # It's crucial to use save_pretrained here which also saves the config.
+    # Using safe_serialization=True is best practice now.
+    fresh_model.save_pretrained(model_dir, safe_serialization=True)
+    print("--- Model cleaning complete ---")
+
 
 # Modified to accept the tokenizer as an argument
 def data_loader(dataset_path, tokenizer, sample_start=0, max_length=512):
@@ -103,8 +168,9 @@ def fine_tune_full(params):
         save_steps=200,
         gradient_checkpointing=gradient_checkpointing,
         save_total_limit=2,
+        label_names=["labels"],
         report_to="none",
-        remove_unused_columns=False,
+        remove_unused_columns=False, 
     )
     
     torch.set_float32_matmul_precision('high')
@@ -112,6 +178,9 @@ def fine_tune_full(params):
     trainer.train()
     trainer.save_model()
     tokenizer.save_pretrained(output_dir)
+    clean_compiled_model_inplace(output_dir)  # Clean the model to remove torch.compile artifacts
+    gc.collect()
+    torch.cuda.empty_cache()
     print("Finetuned model is saved at ",output_dir)
     return output_dir
 
