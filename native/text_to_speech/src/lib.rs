@@ -1,6 +1,10 @@
+// src/lib.rs (updated with into_py and remove unused PyNone)
+
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::PyString;
 use std::env;
+use std::process::Command;
+use std::error::Error;
 
 #[derive(Clone)]
 pub struct Segment {
@@ -11,86 +15,68 @@ pub struct Segment {
 
 pub fn generate_speech(
     text: String,
+    output: String,
     speaker: u32,
-    context: Vec<Segment>,
     device: Option<String>,
-    filename: Option<String>,
-) -> PyResult<Vec<f32>> {
+) -> PyResult<()> {
     Python::with_gil(|py| {
         let sys = py.import("sys")?;
         let path = sys.getattr("path")?;
         let dir = env::current_dir()?.to_str().unwrap().to_string();
         path.call_method1("insert", (0, dir))?;
-        let generator_mod = py.import("generator")?;
-        let load_csm_1b = generator_mod.getattr("load_csm_1b")?;
-        let device_str = device.unwrap_or("cuda".to_string());
-        let generator = load_csm_1b.call1((device_str,))?;
-        let segment_class = generator_mod.getattr("Segment")?;
-        let torch = py.import("torch")?;
-        let torchaudio = py.import("torchaudio")?;
-        let sample_rate: i32 = generator.getattr("sample_rate")?.extract()?;
-        let context_py = PyList::empty(py);
-        for seg in context {
-            let audio_path = seg.audio_path.clone();
-            let loaded = torchaudio.getattr("load")?.call1((audio_path,))?;
-            let mut audio_tensor = loaded.get_item(0)?;
-            let orig_sample_rate: i32 = loaded.get_item(1)?.extract()?;
-            audio_tensor = audio_tensor.call_method1("mean", (0,))?;
-            let functional = torchaudio.getattr("functional")?;
-            let resample = functional.getattr("resample")?;
-            audio_tensor = resample.call((audio_tensor, orig_sample_rate, sample_rate), None)?;
-            let py_seg = segment_class.call((seg.speaker as i64, seg.text, audio_tensor), None)?;
-            context_py.append(py_seg)?;
-        }
-        let audio =
-            generator.call_method("generate", (text, speaker as i64, context_py, 10_000), None)?;
-        if let Some(file) = filename {
-            let audio_unsqueeze = audio.call_method1("unsqueeze", (0,))?;
-            let cpu_audio = audio_unsqueeze.call_method0("cpu")?;
-            torchaudio.call_method("save", (file, cpu_audio, sample_rate), None)?;
-        }
-        let audio_list = audio.call_method0("tolist")?;
-        let vec: Vec<f32> = audio_list.extract()?;
-        Ok(vec)
+        
+        let shell_mod = py.import("shell")?;
+        let generate_audio = shell_mod.getattr("generate_audio")?;
+        
+        let device_py = match device {
+            Some(d) => PyString::new(py, &d).into(),
+            None => py.None(),
+        };
+        
+        generate_audio.call((text, output, speaker as i64, device_py), None)?;
+        
+        Ok(())
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Runs the shell.py script as an external process, handling stdout, stderr, and errors.
+/// This function spawns a Python process to execute shell.py with the provided arguments.
+/// The audio file is saved by the Python script.
+pub fn run_shell(
+    text: &str,
+    output: &str,
+    speaker: u32,
+    device: &str,
+) -> Result<String, Box<dyn Error>> {
+    // Assume shell.py is in the current directory or provide full path if needed
+    let shell_path = "shell.py";
 
-    #[test]
-    fn test_generate_speech_no_context() {
-        let result = generate_speech(
-            "Hello from Sesame.".to_string(),
-            0,
-            vec![],
-            Some("cuda".to_string()),
-            Some("test_audio.wav".to_string()),
-        );
-        match &result {
-            Ok(audio) => assert!(!audio.is_empty()),
-            Err(e) => panic!("Error: {:?}", e),
-        }
+    let cmd_output = Command::new("python3")
+        .arg(shell_path)
+        .arg("--text")
+        .arg(text)
+        .arg("--output")
+        .arg(output)
+        .arg("--speaker")
+        .arg(speaker.to_string())
+        .arg("--device")
+        .arg(device)
+        .output()?;
+
+    // Route stderr to console if there's an error
+    if !cmd_output.status.success() {
+        let stderr = String::from_utf8_lossy(&cmd_output.stderr);
+        eprintln!("Error from shell.py: {}", stderr);
+        return Err(format!("shell.py failed with status: {}. STDERR: {}", cmd_output.status, stderr).into());
     }
 
-    #[test]
-    fn test_generate_speech_with_context() {
-        let context = vec![Segment {
-            speaker: 0,
-            text: "In a 1997 AI class at UT Austin, a neural net playing infinite board tic-tac-toe found an unbeatable strategy. Choose moves billions of squares away, causing your opponents to run out of memory and crash.".to_string(),
-            audio_path: "utterance_0.mp3".to_string(),
-        }];
-        let result = generate_speech(
-            "Hello Am I audible, I wanted you guys to tell me if my voice changes alot, okay thanks!".to_string(),
-            0,
-            context,
-            Some("cuda".to_string()),
-            Some("test_audio_with_context.wav".to_string()),
-        );
-        match &result {
-            Ok(audio) => assert!(!audio.is_empty()),
-            Err(e) => panic!("Error: {:?}", e),
-        }
-    }
+    // Route stdout to console
+    let stdout = String::from_utf8_lossy(&cmd_output.stdout);
+    println!("Output from shell.py: {}", stdout);
+
+    // Return the stdout as result for further processing if needed
+    Ok(stdout.to_string())
 }
+
+#[cfg(test)]
+mod tests;
