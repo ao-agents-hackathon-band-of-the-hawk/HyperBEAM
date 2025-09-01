@@ -114,11 +114,11 @@ def fine_tune_lora(params):
     if tokenizer.pad_token is None:
         logger.info("Setting pad_token to eos_token")
         tokenizer.pad_token = tokenizer.eos_token
-    
+
     logger.info("Loading and tokenizing dataset...")
     train_dataset = data_loader(dataset_path, tokenizer, sample_start, max_length)
     logger.info(f"Loaded and tokenized {len(train_dataset)} items")
-    
+
     model.enable_input_require_grads()
 
     if lora_adapter_path:
@@ -133,12 +133,12 @@ def fine_tune_lora(params):
             task_type="CAUSAL_LM",
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         )
-        
+
         logger.info("Applying new LoRA configuration...")
         peft_model = get_peft_model(model, lora_config)
-        peft_model.logger.info_trainable_parameters()
-        
-    
+        peft_model.print_trainable_parameters()
+
+
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     torch.set_float32_matmul_precision('high')
     training_args = TrainingArguments(
@@ -155,21 +155,19 @@ def fine_tune_lora(params):
         save_total_limit=1,
         label_names=["labels"]
     )
-    
+
     logger.info("Starting training...")
     trainer = Trainer(
         model=peft_model, 
         args=training_args, 
         train_dataset=train_dataset, 
-        tokenizer=tokenizer,
         data_collator=data_collator,
     )
-    
+
     trainer.train()
     peft_model.save_pretrained(output_lora_dir)
     tokenizer.save_pretrained(output_lora_dir)
-    
-    logger.info(f"Training completed. LoRA adapter saved to {output_lora_dir}")
+
     logger.info(f"Training completed. LoRA adapter saved to {output_lora_dir}")
     return output_lora_dir
     
