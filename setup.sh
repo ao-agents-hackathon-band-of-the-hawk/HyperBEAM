@@ -63,6 +63,7 @@ fi
 
 # Build and Install Rebar3
 if [ -z "$(rebar3 --version 2>/dev/null)" ]; then \
+    rf -rf rebar3
     git clone --depth=1 https://github.com/erlang/rebar3.git && \
     cd rebar3 && \
     ./bootstrap && \
