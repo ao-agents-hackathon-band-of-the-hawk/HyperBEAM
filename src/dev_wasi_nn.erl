@@ -157,7 +157,7 @@ download_and_store_model(TxID) ->
 %% @doc Load model and perform inference using persistent context management with session support
 load_and_infer(M1, M2, Opts) ->
     Model = maps:get(<<"model_path">>, M2, <<"">>),
-
+    ModelPathStr = binary_to_list(Model),
     % Minimal configuration for Gemma 3 model
     DefaultBaseConfig =
         #{<<"model">> =>
@@ -233,6 +233,7 @@ load_and_infer(M1, M2, Opts) ->
     %%     <<"batch_timeout_ms">> => 100      % Backend handles defaults
     %% }
     ModelConfig = hb_json:encode(DefaultBaseConfig),
+    ModelConfigStr = binary_to_list(ModelConfig),
     UserConfig = maps:get(<<"config">>, M2, ""),
     UserConfigStr = hb_util:list(UserConfig),
     
@@ -258,33 +259,28 @@ load_and_infer(M1, M2, Opts) ->
                     _ -> <<Prompt/binary, " ", PipedTranscript/binary>>
                 end
         end,
-        
+    EffectivePromptStr = binary_to_list(EffectivePrompt),
+
     UserSessionId = maps:get(<<"session_id">>, M2, undefined),
     Reference = maps:get(<<"reference">>, M2, undefined),
     Worker = maps:get(<<"worker">>, M2, undefined),
 
-    % Use provided session ID or generate a new one
     SessionId =
-        case UserSessionId of
-            undefined ->
-                generate_session_id(Opts);
-            _ ->
-                binary_to_list(UserSessionId)
+        case maps:get(<<"session_id">>, M2, undefined) of
+            undefined -> generate_session_id(Opts);
+            UserSessId -> binary_to_list(UserSessId)
         end,
+
 
     try
         % Use persistent context management (fast if model already loaded)
-        case dev_wasi_nn_nif:switch_model(binary_to_list(Model), ModelConfig) of
-            {ok, Context} ->
+        case dev_wasi_nn_nif:ensure_model_loaded(ModelPathStr, ModelConfigStr) of
+            ok ->
                 % Create or reuse session-specific execution context
-                case dev_wasi_nn_nif:init_execution_context_once(Context, SessionId) of
-                    {ok, ExecContextId} ->
+                case dev_wasi_nn_nif:init_session(SessionId) of
+                    {ok, SessionResource} ->
                         % Run inference with session-specific context
-                        case dev_wasi_nn_nif:run_inference(Context,
-                                                           ExecContextId,
-                                                           binary_to_list(EffectivePrompt),
-                                                           UserConfigStr)
-                        of
+                        case dev_wasi_nn_nif:run_inference(SessionResource, EffectivePromptStr, UserConfigStr) of
                             {ok, Output} ->
                                 ?event(dev_wasi_nn, {inference_success, Reference}),
                                 ResponseBody =

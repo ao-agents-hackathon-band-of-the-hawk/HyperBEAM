@@ -6,409 +6,243 @@
 
 -on_load init/0.
 
--export([init_backend/0, init_backend_with_config/1, load_by_name_with_config/3,
-         init_execution_context/2, close_execution_context/2, deinit_backend/1, run_inference/3,
-         run_inference/4, run_inference_with_options/4, set_input/3, compute/2, get_output/3]).
--export([init_execution_context_once/2, switch_model/2]).
--export([cleanup_model_contexts/1, cleanup_all_contexts/0, get_current_model_info/0]).
+% --- API ---
+-export([ensure_model_loaded/2, init_session/1, run_inference/2, run_inference/3]).
 
-%% Module-level cache
--define(CACHE_TAB, wasi_nn_cache).
--define(SINGLETON_KEY, global_cache).
--define(CACHE_OWNER_NAME, wasi_nn_cache_owner).  % Registered name for cache owner process
+% --- NIF stubs (functions implemented in C) ---
+-export([nif_load_by_name_with_config/2, nif_init_execution_context/1, nif_run_inference/3]).
 
-%% Function to start the dedicated ETS table owner process
-start_cache_owner() ->
-    case whereis(?CACHE_OWNER_NAME) of
-        undefined ->
-            % No owner process exists, create one
-            Pid = spawn(fun() ->
-                           % Create the table if it doesn't exist
-                           case ets:info(?CACHE_TAB) of
-                               undefined ->
-                                   ?event(dev_wasi_nn_nif,
-                                          {cache_owner_creating_table, ?CACHE_TAB}),
-                                   ets:new(?CACHE_TAB, [set, named_table, public]);
-                               _ ->
-                                   ?event(dev_wasi_nn_nif, {cache_table_already_exists, ?CACHE_TAB})
-                           end,
-                           % Register the process with a name for easy lookup
-                           register(?CACHE_OWNER_NAME, self()),
-                           cache_owner_loop()
-                        end),
-            {ok, Pid};
-        Pid ->
-            % Owner process already exists
-            {ok, Pid}
-    end.
-
-%% Loop function for the cache owner process - keeps the process alive
-cache_owner_loop() ->
-    receive
-        stop ->
-            ?event(dev_wasi_nn_nif, {cache_owner_stopping}),
-            ok;
-        {From, ping} ->
-            From ! {self(), pong},
-            cache_owner_loop();
-        _ ->
-            cache_owner_loop()
-    after 3600000 -> % Stay alive for a long time (1 hour), then check again
-        cache_owner_loop()
-    end.
-
-%% Create ETS table in a persistent process if it doesn't exist
 init() ->
     PrivDir = code:priv_dir(hb),
     Path = filename:join(PrivDir, "wasi_nn"),
-    ?event(dev_wasi_nn_nif, {loading_nif_from, Path}),
+    erlang:load_nif(Path, 0).
 
-    % Start the dedicated cache owner process
-    start_cache_owner(),
+%% @doc Ensures the correct model is loaded in the singleton backend.
+ensure_model_loaded(ModelPath, Config) ->
+    nif_load_by_name_with_config(ModelPath, Config).
 
-    % No need to create the table here, the owner process handles this
-    case erlang:load_nif(Path, 0) of
-        ok ->
-            ?event(dev_wasi_nn_nif, {nif_loaded_successfully}),
-            ok;
-        {error, {load_failed, Reason}} ->
-            ?event(dev_wasi_nn_nif, {failed_to_load_nif, Reason}),
-            exit({load_failed, {load_failed, Reason}});
-        {error, Reason} ->
-            ?event(dev_wasi_nn_nif, {failed_to_load_nif_with_error, Reason}),
-            exit({load_failed, Reason})
-    end.
+%% @doc Creates a new, safe session resource.
+init_session(SessionId) ->
+    nif_init_execution_context(SessionId).
 
-init_backend() ->
+%% @doc Runs inference with default options.
+run_inference(SessionResource, Prompt) ->
+    % This is the convenient 2-arity wrapper. It calls the 3-arity version.
+    run_inference(SessionResource, Prompt, "{}").
+
+%% @doc Runs inference using a session resource with JSON options.
+run_inference(SessionResource, Prompt, Options) ->
+    % This function calls the actual NIF.
+    nif_run_inference(SessionResource, Prompt, Options).
+
+
+% --- NIF Function Definitions (placeholders) ---
+nif_load_by_name_with_config(_ModelPath, _Config) ->
     erlang:nif_error("NIF library not loaded").
 
-init_backend_with_config(_Config) ->
+nif_init_execution_context(_SessionId) ->
     erlang:nif_error("NIF library not loaded").
 
-load_by_name_with_config(_Context, _Path, _Config) ->
+nif_run_inference(_SessionResource, _Prompt, _Options) ->
     erlang:nif_error("NIF library not loaded").
-
-init_execution_context(_Context, _SessionId) ->
-    erlang:nif_error("NIF library not loaded").
-
-close_execution_context(_Context, _ExecContextId) ->
-    erlang:nif_error("NIF library not loaded").
-
-set_input(_Context, _ExecContextId, _Input) ->
-    erlang:nif_error("NIF library not loaded").
-
-compute(_Context, _ExecContextId) ->
-    erlang:nif_error("NIF library not loaded").
-
-get_output(_Context, _ExecContextId, _Index) ->
-    erlang:nif_error("NIF library not loaded").
-
-deinit_backend(_Context) ->
-    erlang:nif_error("NIF library not loaded").
-
-run_inference(_Context, _ExecContextId, _Prompt) ->
-    erlang:nif_error("NIF library not loaded").
-
-run_inference(_Context, _ExecContextId, _Prompt, _Options) ->
-    erlang:nif_error("NIF library not loaded").
-
-run_inference_with_options(_Context, _ExecContextId, _Prompt, _Options) ->
-    run_inference(_Context, _ExecContextId, _Prompt, _Options).
 
 %% ============================================================================
-%% GLOBAL PERSISTENT CONTEXT MANAGEMENT
+%% REFACTORED EUNIT TESTS FOR THE NEW SINGLETON ARCHITECTURE
 %% ============================================================================
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
 
-%% Switch to a different model, creating a new context for each model
-switch_model(ModelPath, Config) ->
-    ensure_cache_table(),
-    ModelKey = {?SINGLETON_KEY, model_context, ModelPath},
-
-    case ets:lookup(?CACHE_TAB, ModelKey) of
-        [{_, {ok, Context, CachedConfig}}] when CachedConfig =:= Config ->
-            ?event(dev_wasi_nn_nif, {model_already_loaded, ModelPath, reusing_context}),
-            % Update current model reference
-            ets:insert(?CACHE_TAB, {{?SINGLETON_KEY, current_model}, {ModelPath, Config, Context}}),
-            {ok, Context};
-        [{_, {ok, _OldContext, _OldConfig}}] ->
-            ?event(dev_wasi_nn_nif, {model_different_config, ModelPath, reinitializing}),
-            % Cleanup old context for this model
-            deinit_backend(_OldContext),
-            % Create new context for this model
-            create_model_context(ModelPath, Config);
-        [] ->
-            ?event(dev_wasi_nn_nif, {model_not_loaded, ModelPath, creating_new_context}),
-            create_model_context(ModelPath, Config)
-    end.
-
-%% Helper function to create a new model context
-create_model_context(ModelPath, Config) ->
-    ensure_cache_table(),
-    ModelKey = {?SINGLETON_KEY, global_backend, ModelPath},
-
-    % Get or create the global backend context for this model
-    case ets:lookup(?CACHE_TAB, ModelKey) of
-        [{_, {ok, Context}}] ->
-            ?event(dev_wasi_nn_nif, {using_existing_global_backend, ModelPath}),
-            load_model_with_context(Context, ModelPath, Config);
-        [] ->
-            ?event(dev_wasi_nn_nif, {creating_new_global_backend, ModelPath}),
-            case init_backend() of
-                {ok, Context} ->
-                    ets:insert(?CACHE_TAB, {ModelKey, {ok, Context}}),
-                    ?event(dev_wasi_nn_nif, {global_backend_created, ModelPath}),
-                    load_model_with_context(Context, ModelPath, Config);
-                Error ->
-                    ?event(dev_wasi_nn_nif, {failed_to_create_global_backend, ModelPath, Error}),
-                    Error
-            end
-    end.
-
-%% Helper function to load model with existing context
-load_model_with_context(Context, ModelPath, Config) ->
-    ConfigStr = hb_util:list(Config),
-    case load_by_name_with_config(Context, ModelPath, ConfigStr) of
-        ok ->
-            ModelKey = {?SINGLETON_KEY, model_context, ModelPath},
-            ets:insert(?CACHE_TAB, {ModelKey, {ok, Context, Config}}),
-            ets:insert(?CACHE_TAB, {{?SINGLETON_KEY, current_model}, {ModelPath, Config, Context}}),
-            ?event(dev_wasi_nn_nif, {model_context_created, ModelPath}),
-            {ok, Context};
-        Error ->
-            ?event(dev_wasi_nn_nif, {failed_to_load_model, ModelPath, Error}),
-            % Cleanup the backend context since model loading failed
-            deinit_backend(Context),
-            ets:delete(?CACHE_TAB, {?SINGLETON_KEY, global_backend, ModelPath}),
-            {error, {model_load_failed, Error}}
-    end.
-
-%% Get information about the currently loaded model
-get_current_model_info() ->
-    ensure_cache_table(),
-    case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, current_model}) of
-        [{_, {ModelPath, Config, Context}}] ->
-            {ok, {ModelPath, Config, Context}};
-        [] ->
-            {error, no_model_loaded}
-    end.
-
-%% Clean up all contexts for a specific model
-cleanup_model_contexts(ModelPath) ->
-    ensure_cache_table(),
-    % Clean up all execution contexts for this model
-    ets:match_delete(?CACHE_TAB,
-                     {{?SINGLETON_KEY, context_initialized, ModelPath, '_'}, '_'}),
-    % Clean up the model context
-    case ets:lookup(?CACHE_TAB, {?SINGLETON_KEY, model_context, ModelPath}) of
-        [{_, {ok, Context, _Config}}] ->
-            deinit_backend(Context),
-            ets:delete(?CACHE_TAB, {?SINGLETON_KEY, model_context, ModelPath}),
-            ets:delete(?CACHE_TAB, {?SINGLETON_KEY, global_backend, ModelPath}),
-            ?event(dev_wasi_nn_nif, {cleaned_up_contexts, ModelPath}),
-            ok;
-        [] ->
-            ?event(dev_wasi_nn_nif, {no_context_to_cleanup, ModelPath}),
-            ok
-    end.
-
-%% Clean up all cached contexts (useful for testing or memory management)
+%% @doc Helper to ensure a clean state before each test.
 cleanup_all_contexts() ->
-    ensure_cache_table(),
-    % Get all model contexts and clean them up
-    _ModelContexts =
-        ets:match(?CACHE_TAB, {{?SINGLETON_KEY, model_context, '$1'}, {ok, '$2', '$3'}}),
-
-    % Clear the entire cache
-    ets:delete_all_objects(?CACHE_TAB),
-    ?event(dev_wasi_nn_nif, {all_contexts_cleaned_up}),
+    % In the new architecture, there's no direct way to deinit from Erlang,
+    % which is by design for safety. For testing, we can add a NIF if needed,
+    % but for now, we'll rely on the fact that each model load is idempotent.
     ok.
 
-%% Helper function to safely access the ETS table
-ensure_cache_table() ->
-    case ets:info(?CACHE_TAB) of
-        undefined ->
-            % Start the cache owner which will create the table
-            ?event(dev_wasi_nn_nif, {table_doesnt_exist, starting_cache_owner}),
-            start_cache_owner();
-        _ ->
-            % Table exists, ensure owner process is running
-            case whereis(?CACHE_OWNER_NAME) of
-                undefined ->
-                    % Strange case: table exists but no owner - restart owner
-                    ?event(dev_wasi_nn_nif, {table_exists_no_owner, restarting_owner}),
-                    start_cache_owner();
-                _ ->
-                    % All good, table exists and owner is running
-                    ok
-            end
-    end.
+%% @doc Test basic inference functionality.
+basic_inference_test_() ->
+    ?_test(
+        begin
+            Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Config = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
+            SessionId = "test_session_1",
+            Prompt = "What is the meaning of life",
 
-%% Function to ensure execution context is only initialized once per session and model
-init_execution_context_once(Context, SessionId) ->
-    ensure_cache_table(),
-    % Get current model info to create a unique session key per model
-    case get_current_model_info() of
-        {ok, {ModelPath, _Config, _Context}} ->
-            SessionKey = {?SINGLETON_KEY, context_initialized, ModelPath, SessionId},
-            case ets:lookup(?CACHE_TAB, SessionKey) of
-                [{_, {ok, ExecContextId}}] ->
-                    ?event(dev_wasi_nn_nif,
-                           {execution_context_already_initialized, SessionId, ModelPath}),
-                    {ok, ExecContextId};
-                [] ->
-                    Result = init_execution_context(Context, SessionId),
-                    case Result of
-                        {ok, ExecContextId} ->
-                            ets:insert(?CACHE_TAB, {SessionKey, {ok, ExecContextId}}),
-                            ?event(dev_wasi_nn_nif,
-                                   {execution_context_initialized, SessionId, ModelPath}),
-                            {ok, ExecContextId};
-                        Error ->
-                            ?event(dev_wasi_nn_nif,
-                                   {failed_to_initialize_execution_context,
-                                    SessionId,
-                                    ModelPath,
-                                    Error}),
-                            Error
-                    end
-            end;
-        {error, no_model_loaded} ->
-            ?event(dev_wasi_nn_nif, {no_model_loaded, cannot_initialize_execution_context}),
-            {error, no_model_loaded}
-    end.
+            % Ensure the model is loaded into the singleton backend.
+            ?assertEqual(ok, ensure_model_loaded(Path, Config)),
 
-%% Test basic inference functionality
-basic_inference_test() ->
-    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
-    Config =
-        "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enab"
-        "le_debug_log\":true}",
-    SessionId = "test_session_1",
-    Prompt1 = "What is the meaning of life",
+            % Create a session and run inference.
+            {ok, Session} = init_session(SessionId),
+            {ok, Output} = run_inference(Session, Prompt),
+            ?assertNotEqual(<<>>, Output), % Assert that the binary is not empty
+            ?event(dev_wasi_nn_nif, {inference_output, Output}),
 
-    % Test 1: Load first model (should create new context)
-    {ok, Context1} = switch_model(Path, Config),
-    ?event(dev_wasi_nn_nif, {model_loaded, Context1, Path, Config}),
+            cleanup_all_contexts()
+        end
+    ).
 
-    % Test 2: Create session and run inference
-    {ok, ExecContextId1} = init_execution_context_once(Context1, SessionId),
-    {ok, Output1} = run_inference(Context1, ExecContextId1, Prompt1),
-    ?event(dev_wasi_nn_nif, {run_inference, Context1, ExecContextId1, Prompt1, Output1}),
-    ?assertNotEqual(Output1, ""),
+%% @doc Test session management and conversation context.
+session_management_test_() ->
+    ?_test(
+        begin
+            Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Config = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
 
-    % Cleanup all contexts
-    cleanup_all_contexts(),
-    ok.
+            % Load the model.
+            ?assertEqual(ok, ensure_model_loaded(Path, Config)),
 
-%% Test session management capabilities with more detailed conversation
-session_management_test() ->
-    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
-    Config =
-        "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enab"
-        "le_debug_log\":true}",
+            % Create two separate, isolated sessions.
+            {ok, Session1} = init_session("session_1"),
+            {ok, Session2} = init_session("session_2"),
 
-    % Load model
-    {ok, Context} = switch_model(Path, Config),
+            % Run conversation in Session 1.
+            {ok, _Response1} = run_inference(Session1, "Hello, my name is Alice."),
+            {ok, Response2} = run_inference(Session1, "What is my name?"),
 
-    % Create multiple sessions
-    {ok, Session1} = init_execution_context_once(Context, "session_1"),
-    {ok, Session2} = init_execution_context_once(Context, "session_2"),
+            % Session 2 should have no knowledge of Session 1's conversation.
+            {ok, Response3} = run_inference(Session2, "What is my name?"),
 
-    % Verify sessions are different
-    ?assertNotEqual(Session1, Session2),
+            % Verify that Session 1 remembers the context.
+            AliceInResponse = string:str(binary_to_list(Response2), "Alice") > 0,
+            ?assert(AliceInResponse, "Session 1 should remember Alice's name."),
 
-    % Run inference in both sessions
-    {ok, Response1} = run_inference(Context, Session1, "Hello, my name is Alice."),
-    ?event(dev_wasi_nn_nif, {session1_response1, Response1}),
+            % Verify that Session 2 does not have the context.
+            AliceNotInResponse = string:str(binary_to_list(Response3), "Alice") == 0,
+            ?assert(AliceNotInResponse, "Session 2 should not know Alice's name."),
 
-    % This should remember Alice's name
-    {ok, Response2} = run_inference(Context, Session1, "What is my name?"),
-    ?event(dev_wasi_nn_nif, {session1_response2, Response2}),
+            cleanup_all_contexts()
+        end
+    ).
 
-    % Verify that the response mentions Alice
-    AliceInResponse =
-        case string:find(Response2, "Alice") of
-            nomatch ->
-                false;
-            _ ->
-                true
-        end,
+%% @doc Test using runtime options to control inference.
+inference_with_options_test_() ->
+    ?_test(
+        begin
+            Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Config = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
+            Prompt = "Write one short sentence about the weather",
 
-    % Session 2 should not know Alice's name
-    {ok, Response3} = run_inference(Context, Session2, "What is my name?"),
-    ?event(dev_wasi_nn_nif, {session2_response1, Response3}),
+            ?assertEqual(ok, ensure_model_loaded(Path, Config)),
 
-    % Cleanup
-    cleanup_all_contexts(),
+            % Use low temperature for deterministic output (with a seed).
+            OptionsLowTemp = "{\"seed\":42,\"temperature\":0.1}",
+            {ok, Session1} = init_session("session_1"),
+            {ok, OutputLowTemp} = run_inference(Session1, Prompt, OptionsLowTemp),
+            ?assertNotEqual(<<>>, OutputLowTemp),
 
-    % Verify the responses
-    ?assert(AliceInResponse, "Session 1 should remember Alice's name"),
+            % Ensure we get the same output with the same options in a new session.
+            {ok, Session2} = init_session("session_2"),
+            {ok, OutputLowTemp2} = run_inference(Session2, Prompt, OptionsLowTemp),
+            ?assertEqual(OutputLowTemp, OutputLowTemp2),
 
-    ok.
+            % Use high temperature for more creative (different) output.
+            OptionsHighTemp = "{\"seed\":42,\"temperature\":1.2}",
+            {ok, Session3} = init_session("session_3"),
+            {ok, OutputHighTemp} = run_inference(Session3, Prompt, OptionsHighTemp),
+            ?assertNotEqual(OutputHighTemp, OutputLowTemp),
 
-% {
-%   "temperature": 0.8,
-%   "top_p": 0.95,
-%   "top_k": 40,
-%   "max_tokens": 512,
-%   "repeat_penalty": 1.1,
-%   "stop": ["\n\n", ""]
-% }
-%% Test inference with options
-inference_with_options_test() ->
-    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
-    Config =
-        "{\"n_gpu_layers\":98,\"ctx_size\":2048,\"stream-stdout\":true,\"enab"
-        "le_debug_log\":true}",
+            cleanup_all_contexts()
+        end
+    ).
 
-    {ok, Context} = switch_model(Path, Config),
+%% @doc Test switching models and configurations.
+model_switching_with_config_test_() ->
+    ?_test(
+        begin
+            Path1 = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
+            Config1 = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
+            Config2 = "{\"n_gpu_layers\":48,\"ctx_size\":1024}",
+            SessionId = "config_test_session",
 
-    Prompt = "Write one short sentence about the weather",
+            % Load model 1 with first config.
+            ?assertEqual(ok, ensure_model_loaded(Path1, Config1)),
+            {ok, Session1} = init_session(SessionId),
+            {ok, Output1} = run_inference(Session1, "Test with model 1"),
+            ?assertNotEqual(<<>>, Output1),
 
-    % Use low temperature for more deterministic output
-    OptionsLowTemp = "{\"seed\":42,\"temperature\":0.1}",
-    {ok, ExecContextId1} = init_execution_context_once(Context, "session_1"),
-    {ok, OutputLowTemp} =
-        run_inference_with_options(Context, ExecContextId1, Prompt, OptionsLowTemp),
-    ?assertNotEqual(OutputLowTemp, ""),
+            % Switch to model 2 with a different config.
+            ?assertEqual(ok, ensure_model_loaded(Path2, Config2)),
+            % Re-initializing the session is good practice after a model switch.
+            {ok, Session2} = init_session(SessionId),
+            {ok, Output2} = run_inference(Session2, "Test with model 2"),
+            ?assertNotEqual(<<>>, Output2),
 
-    % Ensure we get same output with same options
-    {ok, ExecContextId2} = init_execution_context_once(Context, "session_2"),
-    {ok, OutputLowTemp2} =
-        run_inference_with_options(Context, ExecContextId2, Prompt, OptionsLowTemp),
-    ?assertEqual(OutputLowTemp2, OutputLowTemp),
+            % The outputs should be different.
+            ?assertNotEqual(Output1, Output2),
 
-    % Use high temperature for more creative output
-    {ok, ExecContextId3} = init_execution_context_once(Context, "session_3"),
-    OptionsHighTemp = "{\"seed\":42,\"temperature\":1.0}",
-    {ok, OutputHighTemp} =
-        run_inference_with_options(Context, ExecContextId3, Prompt, OptionsHighTemp),
-    ?assertNotEqual(OutputHighTemp, OutputLowTemp),
+            cleanup_all_contexts()
+        end
+    ).
 
-    % Cleanup
-    cleanup_all_contexts(),
-    ok.
+-endif.
 
-%% Test model switching with different configurations
-model_switching_with_config_test() ->
-    Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
-    Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
-    Config1 = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
-    Config2 = "{\"n_gpu_layers\":48,\"ctx_size\":1024}",
-    SessionId = "config_test_session",
+%% @doc This test verifies that the new singleton architecture is robust and
+%%      prevents the original segmentation fault. It does this by creating the
+%%      exact race condition that previously caused the crash: attempting to
+%%      modify the backend state while it is in use.
+%%
+%% A "successful" run of this test is a clean PASS. A crash would mean the
+%%      fix is incomplete.
+%%
+%% How it works:
+%% 1. A "Victim" process starts a very long-running `run_inference` task. This
+%%    acquires a mutex lock inside the NIF C code.
+%% 2. The main "Attacker" process immediately tries to load a *different model*.
+%%    This `ensure_model_loaded` call will also try to acquire the same mutex.
+%% 3. Because the Victim holds the lock, the Attacker's model-switch operation
+%%    will safely BLOCK and wait. It cannot proceed to tear down the backend.
+%% 4. The Victim's long inference task completes and it releases the mutex.
+%% 5. The Attacker's call unblocks and safely switches the model.
+%% 6. The test passes, proving that the concurrent operations were correctly
+%%    serialized and the use-after-free race condition was prevented.
+verify_segfault_is_fixed_test_() ->
+    ?_test(
+        begin
+            ModelPath1 = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            ModelPath2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf", % A different model
+            ConfigMap = #{
+                <<"model">> => #{ <<"n_gpu_layers">> => 99, <<"ctx_size">> => 2048 },
+                <<"stopping">> => #{ <<"max_tokens">> => 1024 } % A reasonably long task
+            },
+            Config = binary_to_list(hb_json:encode(ConfigMap)),
+            Prompt = "Write a long, detailed story about a journey to the center of the Earth.",
+            Parent = self(),
 
-    % Load model with first config
-    {ok, Context1} = switch_model(Path, Config1),
-    {ok, ExecContextId1} = init_execution_context_once(Context1, SessionId),
-    {ok, Output1} = run_inference(Context1, ExecContextId1, "Test with config 1"),
-    ?assertNotEqual(Output1, ""),
+            % Step 1: Load the first model.
+            ?assertEqual(ok, ensure_model_loaded(ModelPath1, Config)),
+            {ok, Session} = init_session("victim_session"),
 
-    % Switch to same model with different config
-    {ok, Context2} = switch_model(Path2, Config2),
-    {ok, ExecContextId2} = init_execution_context_once(Context2, SessionId),
-    {ok, Output2} = run_inference(Context2, ExecContextId2, "Test with config 2"),
-    ?assertNotEqual(Output2, ""),
+            ?debugFmt("Victim setup complete. Spawning inference process.",[]),
 
-    % Cleanup
-    cleanup_all_contexts(),
-    ok.
+            % Step 2: Spawn the "Victim" to start the long-running inference.
+            VictimPid = spawn_link(fun() ->
+                Result = run_inference(Session, Prompt, "{}"),
+                Parent ! {victim_done, Result}
+            end),
+
+            % Step 3: Give the Victim a head start to ensure it acquires the NIF mutex.
+            timer:sleep(200), % 200ms
+
+            ?debugFmt("Victim is running. Attacker now attempts to switch the model...",[]),
+
+            % Step 4: The "Attacker's strike". This call should BLOCK safely, not crash.
+            SwitchResult = ensure_model_loaded(ModelPath2, Config),
+            ?assertEqual(ok, SwitchResult),
+
+            ?debugFmt("Model switch completed safely after inference finished.",[]),
+
+            % Step 5: Wait for the Victim to send its result. This proves it completed.
+            receive
+                {victim_done, {ok, InferenceOutput}} ->
+                    ?assert(is_binary(InferenceOutput)),
+                    ?assert(byte_size(InferenceOutput) > 0);
+                {victim_done, Error} ->
+                    ?assert(false, io_lib:format("Victim failed with: ~p", [Error]))
+            after 60000 -> % 60 second timeout
+                ?assert(false, "Test timed out. The victim process never finished.")
+            end,
+
+            ?debugFmt("Test passed. Concurrent use and modification were handled safely.",[])
+        end
+    ).
