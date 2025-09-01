@@ -2,6 +2,35 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import subprocess
 import os
 import tempfile
+import logging
+
+# --- START: CORRECTED LOGGING SETUP ---
+# 1. Get the root logger.
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 2. Clear any existing handlers.
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+
+# 3. Create a formatter.
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
+
+# 4. Create and add the file handler.
+file_handler = logging.FileHandler('activity.txt')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+root_logger.addHandler(file_handler)
+
+# 5. Create and add the console handler.
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+root_logger.addHandler(console_handler)
+
+# 6. Get the logger for this module.
+logger = logging.getLogger(__name__)
+# --- END: CORRECTED LOGGING SETUP ---
 
 def model_to_gguf(params):
     """Converts full model to GGUF."""
@@ -24,16 +53,16 @@ def model_to_gguf(params):
     if is_local:
         if not os.path.isdir(model_path):
             raise ValueError(f"Local model directory '{model_path}' does not exist.")
-        print(f"Using local model from {model_path}")
+        logger.info(f"Using local model from {model_path}")
     else:
         # Create a temporary directory for the model if downloading
         model_path = tempfile.mkdtemp()
-        print("Downloading model...")
+        logger.info("Downloading model...")
         model = AutoModelForCausalLM.from_pretrained(model_name)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model.save_pretrained(model_path)
         tokenizer.save_pretrained(model_path)
-        print("Model downloaded and saved to temp dir.")
+        logger.info("Model downloaded and saved to temp dir.")
     
     # Convert to GGUF using the model path (local or temp)
     try:
@@ -43,7 +72,7 @@ def model_to_gguf(params):
             "--outfile", gguf_output_path_model,
             "--outtype", gguf_precision
         ], check=True)
-        print(f"Converted model to GGUF at {gguf_output_path_model}")
+        logger.info(f"Converted model to GGUF at {gguf_output_path_model}")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"GGUF conversion failed with exit code {e.returncode}: {e.stderr or e.stdout}")
     except Exception as e:

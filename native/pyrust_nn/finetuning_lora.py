@@ -7,18 +7,41 @@ from transformers import (
 )
 
 from peft import LoraConfig, get_peft_model, PeftModel
-from torch.utils.data import Dataset as TorchDataset # Renamed to avoid conflict with datasets.Dataset
+from torch.utils.data import Dataset # Renamed to avoid conflict with datasets.Dataset
 import torch
 import json
 import os
 import logging
-from typing import Optional
-from datasets import Dataset # Import Dataset class explicitly
+from datasets import Dataset 
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- START: CORRECTED LOGGING SETUP ---
+# 1. Get the root logger.
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 2. Clear any existing handlers.
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+
+# 3. Create a formatter.
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
+
+# 4. Create and add the file handler.
+file_handler = logging.FileHandler('activity.txt')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+root_logger.addHandler(file_handler)
+
+# 5. Create and add the console handler.
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+root_logger.addHandler(console_handler)
+
+# 6. Get the logger for this module.
 logger = logging.getLogger(__name__)
-
+# --- END: CORRECTED LOGGING SETUP ---
 
 def data_loader(dataset_path, tokenizer, sample_start=0, max_length=512):
     """Loads dataset from JSON file and tokenizes it."""
@@ -71,7 +94,7 @@ def fine_tune_lora(params):
     sample_start = params.get("sample_start", 0)
     max_length = params.get("max_length", 512)
     
-    print(f"Loading model and tokenizer for: {model_name}")
+    logger.info(f"Loading model and tokenizer for: {model_name}")
 
     # --- START: MODIFIED MODEL LOADING ---
     # This logic now checks for an optional local directory.
@@ -113,7 +136,7 @@ def fine_tune_lora(params):
         
         logger.info("Applying new LoRA configuration...")
         peft_model = get_peft_model(model, lora_config)
-        peft_model.print_trainable_parameters()
+        peft_model.logger.info_trainable_parameters()
         
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -147,8 +170,10 @@ def fine_tune_lora(params):
     tokenizer.save_pretrained(output_lora_dir)
     
     logger.info(f"Training completed. LoRA adapter saved to {output_lora_dir}")
-    print(f"Training completed. LoRA adapter saved to {output_lora_dir}")
+    logger.info(f"Training completed. LoRA adapter saved to {output_lora_dir}")
     return output_lora_dir
+    
+   
 
 # --- (if __name__ == "__main__" block remains the same) ---
 if __name__ == "__main__":
@@ -156,7 +181,7 @@ if __name__ == "__main__":
         "dataset_path": "data.json", 
         "output_lora_dir": "models/lora_adapter",
         "max_length": 512,
-        "num_epochs": 500,
+        "num_epochs": 5,
         "batch_size": 1
     }
     fine_tune_lora(sample_params)

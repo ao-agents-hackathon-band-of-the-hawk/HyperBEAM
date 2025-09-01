@@ -3,6 +3,35 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import subprocess  # Assuming llama.cpp convert tool
 import os
 import tempfile
+import logging
+
+# --- START: CORRECTED LOGGING SETUP ---
+# 1. Get the root logger.
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 2. Clear any existing handlers.
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+
+# 3. Create a formatter.
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
+
+# 4. Create and add the file handler.
+file_handler = logging.FileHandler('activity.txt')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+root_logger.addHandler(file_handler)
+
+# 5. Create and add the console handler.
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+root_logger.addHandler(console_handler)
+
+# 6. Get the logger for this module.
+logger = logging.getLogger(__name__)
+# --- END: CORRECTED LOGGING SETUP ---
 
 def lora_to_gguf(params):
     """Merges LoRA adapter and converts to GGUF."""
@@ -22,12 +51,12 @@ def lora_to_gguf(params):
     # Create a temporary directory for the base model
     with tempfile.TemporaryDirectory() as temp_base_dir:
         # Download base model and tokenizer to temp dir
-        print("Downloading base model...")
+        logger.info("Downloading base model...")
         base_model = AutoModelForCausalLM.from_pretrained(model_name)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         base_model.save_pretrained(temp_base_dir)
         tokenizer.save_pretrained(temp_base_dir)
-        print("Base model downloaded and saved to temp dir.")
+        logger.info("Base model downloaded and saved to temp dir.")
         
         # Convert to GGUF using the local base model path
         try:
@@ -38,7 +67,7 @@ def lora_to_gguf(params):
                 "--outfile", gguf_output_path_lora,
                 "--outtype", gguf_precision
             ], check=True)
-            print(f"Converted LoRA to GGUF at {gguf_output_path_lora}")
+            logger.info(f"Converted LoRA to GGUF at {gguf_output_path_lora}")
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"GGUF conversion failed with exit code {e.returncode}: {e.stderr or e.stdout}")
         except Exception as e:

@@ -1,11 +1,40 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer , AutoConfig
-from datasets import load_dataset, Dataset
+from datasets import  Dataset
 import json
 import gc
 import os
 from collections import OrderedDict
 from safetensors.torch import load_file
+import logging
+
+# --- START: CORRECTED LOGGING SETUP ---
+# 1. Get the root logger.
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 2. Clear any existing handlers.
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+
+# 3. Create a formatter.
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
+
+# 4. Create and add the file handler.
+file_handler = logging.FileHandler('activity.txt')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+root_logger.addHandler(file_handler)
+
+# 5. Create and add the console handler.
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+root_logger.addHandler(console_handler)
+
+# 6. Get the logger for this module.
+logger = logging.getLogger(__name__)
+# --- END: CORRECTED LOGGING SETUP ---
 
 # --- NEW HELPER FUNCTION ---
 def clean_compiled_model_inplace(model_dir):
@@ -15,7 +44,7 @@ def clean_compiled_model_inplace(model_dir):
     making it compatible with conversion scripts.
     This version manually loads the state_dict to ensure cleaning happens.
     """
-    print(f"--- Cleaning compiled model artifacts in {model_dir} ---")
+    logger.info(f"--- Cleaning compiled model artifacts in {model_dir} ---")
 
     # Find the state dictionary file. It could be .safetensors or .bin
     state_dict_path = None
@@ -26,14 +55,14 @@ def clean_compiled_model_inplace(model_dir):
         state_dict_path = safetensors_path
         # Use safetensors loader
         original_state_dict = load_file(state_dict_path)
-        print("Loaded state_dict from model.safetensors")
+        logger.info("Loaded state_dict from model.safetensors")
     elif os.path.exists(bin_path):
         state_dict_path = bin_path
         # Use torch loader
         original_state_dict = torch.load(state_dict_path, map_location="cpu")
-        print("Loaded state_dict from pytorch_model.bin")
+        logger.info("Loaded state_dict from pytorch_model.bin")
     else:
-        print("Could not find a model state_dict file (.safetensors or .bin). Skipping cleaning.")
+        logger.info("Could not find a model state_dict file (.safetensors or .bin). Skipping cleaning.")
         return
 
     # Create a new, clean state dictionary
@@ -41,10 +70,10 @@ def clean_compiled_model_inplace(model_dir):
     prefix = '_orig_mod.'
 
     if not any(key.startswith(prefix) for key in original_state_dict.keys()):
-        print("Model does not appear to be compiled. No cleaning needed.")
+        logger.info("Model does not appear to be compiled. No cleaning needed.")
         return
 
-    print("Stripping '_orig_mod.' prefix from tensor names...")
+    logger.info("Stripping '_orig_mod.' prefix from tensor names...")
     for key, value in original_state_dict.items():
         if key.startswith(prefix):
             new_key = key[len(prefix):]  # This removes the prefix
@@ -62,11 +91,11 @@ def clean_compiled_model_inplace(model_dir):
     fresh_model.load_state_dict(cleaned_state_dict)
     
     # Save the clean model, overwriting the compiled version
-    print(f"Saving cleaned model back to {model_dir}...")
+    logger.info(f"Saving cleaned model back to {model_dir}...")
     # It's crucial to use save_pretrained here which also saves the config.
     # Using safe_serialization=True is best practice now.
     fresh_model.save_pretrained(model_dir, safe_serialization=True)
-    print("--- Model cleaning complete ---")
+    logger.info("--- Model cleaning complete ---")
 
 
 # Modified to accept the tokenizer as an argument
@@ -147,10 +176,10 @@ def fine_tune_full(params):
     
     try:
         model = torch.compile(model)
-        print("Model compiled successfully.")
+        logger.info("Model compiled successfully.")
     except Exception as e:
-        print(f"Model compilation failed with error: {e}")
-        print("Proceeding without compilation.")
+        logger.info(f"Model compilation failed with error: {e}")
+        logger.info("Proceeding without compilation.")
     
     # --- START: MODIFIED CODE ---
     # 3. Pass the tokenizer to the data_loader function
@@ -181,7 +210,7 @@ def fine_tune_full(params):
     clean_compiled_model_inplace(output_dir)  # Clean the model to remove torch.compile artifacts
     gc.collect()
     torch.cuda.empty_cache()
-    print("Finetuned model is saved at ",output_dir)
+    logger.info("Finetuned model is saved at ",output_dir)
     return output_dir
 
 if __name__ == "__main__":
