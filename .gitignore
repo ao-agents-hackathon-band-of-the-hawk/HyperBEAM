@@ -56,3 +56,5 @@ mkdocs-site-manifest.csv
 *codebase.md
 *.log
 .venv
+otp
+rebar3
