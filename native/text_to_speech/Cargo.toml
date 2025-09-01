@@ -3,5 +3,12 @@ name = "csm"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "text_to_speech"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 pyo3 = { version = "0.25.1", features = ["auto-initialize", "py-clone"] }
+rustler = "0.36.2"
+lazy_static = "1.5.0"

@@ -1,96 +1,148 @@
+use lazy_static::lazy_static;
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyList};
+use rustler::{types::binary::OwnedBinary, Encoder, Env, Error as RustlerError, NifResult, Term};
 use std::env;
 
-#[derive(Clone)]
-pub struct Segment {
-    pub speaker: u32,
-    pub text: String,
-    pub audio_path: String,
-}
-
-pub fn generate_speech(
-    text: String,
-    speaker: u32,
-    context: Vec<Segment>,
-    device: Option<String>,
-    filename: Option<String>,
-) -> PyResult<Vec<f32>> {
-    Python::with_gil(|py| {
-        let sys = py.import("sys")?;
-        let path = sys.getattr("path")?;
-        let dir = env::current_dir()?.to_str().unwrap().to_string();
-        path.call_method1("insert", (0, dir))?;
-        let generator_mod = py.import("generator")?;
-        let load_csm_1b = generator_mod.getattr("load_csm_1b")?;
-        let device_str = device.unwrap_or("cuda".to_string());
-        let generator = load_csm_1b.call1((device_str,))?;
-        let segment_class = generator_mod.getattr("Segment")?;
-        let torch = py.import("torch")?;
-        let torchaudio = py.import("torchaudio")?;
-        let sample_rate: i32 = generator.getattr("sample_rate")?.extract()?;
-        let context_py = PyList::empty(py);
-        for seg in context {
-            let audio_path = seg.audio_path.clone();
-            let loaded = torchaudio.getattr("load")?.call1((audio_path,))?;
-            let mut audio_tensor = loaded.get_item(0)?;
-            let orig_sample_rate: i32 = loaded.get_item(1)?.extract()?;
-            audio_tensor = audio_tensor.call_method1("mean", (0,))?;
-            let functional = torchaudio.getattr("functional")?;
-            let resample = functional.getattr("resample")?;
-            audio_tensor = resample.call((audio_tensor, orig_sample_rate, sample_rate), None)?;
-            let py_seg = segment_class.call((seg.speaker as i64, seg.text, audio_tensor), None)?;
-            context_py.append(py_seg)?;
-        }
-        let audio =
-            generator.call_method("generate", (text, speaker as i64, context_py, 10_000), None)?;
-        if let Some(file) = filename {
-            let audio_unsqueeze = audio.call_method1("unsqueeze", (0,))?;
-            let cpu_audio = audio_unsqueeze.call_method0("cpu")?;
-            torchaudio.call_method("save", (file, cpu_audio, sample_rate), None)?;
-        }
-        let audio_list = audio.call_method0("tolist")?;
-        let vec: Vec<f32> = audio_list.extract()?;
-        Ok(vec)
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_generate_speech_no_context() {
-        let result = generate_speech(
-            "Hello from Sesame.".to_string(),
-            0,
-            vec![],
-            Some("cuda".to_string()),
-            Some("test_audio.wav".to_string()),
-        );
-        match &result {
-            Ok(audio) => assert!(!audio.is_empty()),
-            Err(e) => panic!("Error: {:?}", e),
-        }
-    }
-
-    #[test]
-    fn test_generate_speech_with_context() {
-        let context = vec![Segment {
-            speaker: 0,
-            text: "In a 1997 AI class at UT Austin, a neural net playing infinite board tic-tac-toe found an unbeatable strategy. Choose moves billions of squares away, causing your opponents to run out of memory and crash.".to_string(),
-            audio_path: "utterance_0.mp3".to_string(),
-        }];
-        let result = generate_speech(
-            "Hello Am I audible, I wanted you guys to tell me if my voice changes alot, okay thanks!".to_string(),
-            0,
-            context,
-            Some("cuda".to_string()),
-            Some("test_audio_with_context.wav".to_string()),
-        );
-        match &result {
-            Ok(audio) => assert!(!audio.is_empty()),
-            Err(e) => panic!("Error: {:?}", e),
-        }
+mod atoms {
+    rustler::atoms! {
+        ok,
+        error,
     }
 }
+
+// A struct to hold the Python objects, which can be safely stored in a static variable.
+struct TTSGenerator {
+    generator: Py<PyAny>,
+    sample_rate: u32,
+}
+
+unsafe impl Send for TTSGenerator {}
+unsafe impl Sync for TTSGenerator {}
+
+lazy_static! {
+    static ref TTS_MODEL: TTSGenerator = {
+        eprintln!("Loading CSM text-to-speech model...");
+        Python::with_gil(|py| {
+            let sys = py.import("sys").expect("Failed to import sys");
+            let path = sys.getattr("path").expect("Failed to get sys.path");
+            let manifest_dir = env!("CARGO_MANIFEST_DIR");
+            path.call_method1("insert", (0, manifest_dir))
+                .expect("Failed to add to sys.path");
+
+            let generator_module = py
+                .import("generator")
+                .expect("Failed to import generator module");
+
+            let torch = py.import("torch").unwrap();
+            let device = if torch
+                .getattr("cuda")
+                .unwrap()
+                .call_method0("is_available")
+                .unwrap()
+                .is_truthy()
+                .unwrap()
+            {
+                "cuda"
+            } else {
+                "cpu"
+            };
+            eprintln!("Using device: {}", device);
+
+            let generator_instance: Py<PyAny> = generator_module
+                .getattr("load_csm_1b")
+                .unwrap()
+                .call1((device,))
+                .unwrap()
+                .into();
+
+            let sample_rate: u32 = generator_instance
+                .getattr(py,"sample_rate")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+
+            eprintln!("CSM model loaded successfully.");
+
+            TTSGenerator {
+                generator: generator_instance,
+                sample_rate,
+            }
+        })
+    };
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+fn generate_audio<'a>(env: Env<'a>, text: String, speaker: u32) -> NifResult<Term<'a>> {
+    let result = std::panic::catch_unwind(|| {
+        Python::with_gil(|py| -> PyResult<Vec<u8>> {
+            let context = PyList::empty(py);
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("context", context)?;
+            kwargs.set_item("max_audio_length_ms", 10000)?;
+
+            let audio_tensor =
+                TTS_MODEL
+                    .generator
+                    .call_method(py, "generate", (text, speaker), Some(&kwargs))?;
+
+            let torchaudio = py.import("torchaudio")?;
+            let io = py.import("io")?;
+            let buffer = io.call_method0("BytesIO")?;
+
+            let save_kwargs = PyDict::new(py);
+            save_kwargs.set_item("format", "wav")?;
+
+            let unsqueezed_tensor = audio_tensor.call_method1(py, "unsqueeze", (0,))?;
+            let cpu_tensor = unsqueezed_tensor.call_method0(py, "cpu")?;
+            
+            // THE FIX: Pass `buffer` by reference (`&buffer`) so it is not moved.
+            torchaudio.call_method(
+                "save",
+                (
+                    &buffer, // Pass as a reference to avoid moving the value
+                    cpu_tensor,
+                    TTS_MODEL.sample_rate,
+                ),
+                Some(&save_kwargs),
+            )?;
+
+            buffer.call_method1("seek", (0,))?;
+            let audio_bytes: Vec<u8> = buffer.call_method0("read")?.extract()?;
+
+            Ok(audio_bytes)
+        })
+    });
+
+    match result {
+        Ok(Ok(audio_bytes)) => {
+            let mut binary = OwnedBinary::new(audio_bytes.len()).unwrap();
+            binary.as_mut_slice().copy_from_slice(&audio_bytes);
+            Ok((atoms::ok(), binary.release(env)).encode(env))
+        }
+        Ok(Err(e)) => {
+            let err_msg = format!("Python error: {}", e);
+            eprintln!("{}", err_msg);
+            Ok((atoms::error(), err_msg).encode(env))
+        }
+        Err(panic) => {
+            let panic_msg = if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "Unknown panic".to_string()
+            };
+            eprintln!("Panic during audio generation: {}", panic_msg);
+            Err(RustlerError::Term(Box::new(panic_msg)))
+        }
+    }
+}
+
+fn load(_env: Env, _info: Term) -> bool {
+    lazy_static::initialize(&TTS_MODEL);
+    true
+}
+
+// FINAL FIX: Remove the deprecated explicit function list to clear the warning.
+rustler::init!("dev_text_to_speech_nif", load = load);
