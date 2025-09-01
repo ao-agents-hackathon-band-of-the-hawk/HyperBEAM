@@ -43,7 +43,7 @@
         ];
 
         # Platform-specific inputs
-        linuxInputs = with pkgs; [ rocksdb numactl cudaPackages.cudatoolkit cudaPackages.cudnn cudaPackages.libcublas];
+        linuxInputs = with pkgs; [ rocksdb numactl cudaPackages.cudnn cudaPackages.libcublas];
         darwinInputs = [ /* Add Darwin-specific if needed */ ];
 
         totalInputs = commonInputs
