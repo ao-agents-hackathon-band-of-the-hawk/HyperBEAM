@@ -17,7 +17,7 @@ if root_logger.hasHandlers():
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
 
 # 4. Create and add the file handler.
-file_handler = logging.FileHandler('activity.txt')
+file_handler = logging.FileHandler('activity.log')
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(formatter)
 root_logger.addHandler(file_handler)
