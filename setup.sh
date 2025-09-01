@@ -60,6 +60,23 @@ python3.12 -m venv .venv
 uv pip install -r requirements.txt
 source .venv/bin/activate
 
+if [ -f "/usr/lib/x86_64-linux-gnu/libpython3.12.so" ]; then
+    echo "LD_PRELOAD library file exists."
+    if [ "$LD_PRELOAD" != "/usr/lib/x86_64-linux-gnu/libpython3.12.so" ]; then
+        echo "LD_PRELOAD not set to the library."
+        if ! grep -q 'export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libpython3.12.so"' .venv/bin/activate; then
+            echo "Adding LD_PRELOAD export to activate script."
+            echo 'export LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libpython3.12.so"' >> .venv/bin/activate
+        else
+            echo "LD_PRELOAD export already in activate script."
+        fi
+    else
+        echo "LD_PRELOAD already set to the library."
+    fi
+else
+    echo "LD_PRELOAD library file does not exist."
+fi
+
 if [ -d "/usr/local/cuda-12.4/bin" ]; then
     echo "CUDA bin directory exists."
     if [[ ":$PATH:" != *":/usr/local/cuda-12.4/bin:"* ]]; then
