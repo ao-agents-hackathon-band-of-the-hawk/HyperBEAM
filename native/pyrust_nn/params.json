@@ -1,9 +1,9 @@
 {
   "model_name": "Qwen/Qwen1.5-1.8B-Chat",
   "dataset_path": "data.json",
-  "output_dir": "models/finetuned",  
+  "output_dir": "models/finetuned",
   "output_lora_dir": "models/lora_adapter",
-  "adapter_path" : "models/lora_adapter",
+  "adapter_path": "models/lora_adapter",
   "num_epochs": 2,
   "batch_size": 1,
   "learning_rate": 2e-5,
@@ -13,13 +13,13 @@
   "use_gradient_checkpointing": true,
   "enable_lora": null,
   "merge_weights": false,
-  "checkpoint_lora": "models/lora_adapter",
+  "checkpoint_lora": null,
   "sample_start": 0,
   "max_length": 128,
   "prompt": "What is the capital of France?",
   "precision": "16-bit",
   "gguf_precision": "f16",
   "quant_output_dir": "models/quant",
-  "gguf_output_path_lora": "lora.gguf" ,
-  "gguf_output_palth_model": "model.gguf"  
+  "gguf_output_path_lora": "lora.gguf",
+  "gguf_output_palth_model": "model.gguf"
 }
