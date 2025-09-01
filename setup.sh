@@ -30,7 +30,8 @@ sudo apt-get install -y --no-install-recommends \
     zlib1g-dev \
     cuda-toolkit-12-4 \
     cudnn9-cuda-12 \
-    libcudnn9-cuda-12
+    libcudnn9-cuda-12 \
+    g++-12
 
 # Install ncurses packages for Erlang
 sudo apt-get install -y --no-install-recommends \
