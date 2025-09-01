@@ -6,25 +6,57 @@ curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x
 
 echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /" | sudo tee /etc/apt/sources.list.d/cuda-repository.list
 
-sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+# Add DeadSnakes PPA for Python 3.12
+sudo apt-get install -y software-properties-common
+sudo add-apt-repository ppa:deadsnakes/ppa -y
+
+# Update again after adding repos
+sudo apt-get update
+
+# Install autoconf for Erlang build
+sudo apt-get install -y autoconf m4
+
+# Install main dependencies
+sudo apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     git \
     pkg-config \
-    libncurses-dev \
     libssl-dev \
     sudo \
     curl \
-    ca-certificates python3.12 python3.12-venv python3.12-dev libpython3.12-dev zsh zlib1g-dev cudnn9-cuda-12 cuda-toolkit-12-4
+    ca-certificates \
+    zsh \
+    zlib1g-dev \
+    cuda-toolkit-12-4 \
+    cudnn9-cuda-12 \
+    libcudnn9-cuda-12
+
+# Install ncurses packages for Erlang
+sudo apt-get install -y --no-install-recommends \
+    libncurses-dev \
+    libncurses5-dev \
+    libncursesw5-dev \
+    libtinfo5
+
+# Install Python 3.12 packages
+sudo apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    libpython3.12-dev
 
 # Build and Install Erlang/OTP
-if [ -z "$(erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().' 2>/dev/null)" ]; then \
-    git clone --depth=1 --branch maint-27 https://github.com/erlang/otp.git && \
-    cd otp && \
-    ./configure --without-wx --without-debugger --without-observer --without-et && \
-    make -j$(nproc) && \
-    sudo make install && \
-    cd .. && rm -rf otp; \
+if [ -z "$(erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().' 2>/dev/null)" ]; then
+    rm -rf otp
+    git clone --depth=1 --branch maint-27 https://github.com/erlang/otp.git
+    cd otp
+    ./otp_build autoconf
+    ./configure --without-wx --without-debugger --without-observer --without-et
+    make -j$(nproc)
+    sudo make install
+    cd ..
+    rm -rf otp
 else
     echo "Erlang/OTP is already installed"
 fi
