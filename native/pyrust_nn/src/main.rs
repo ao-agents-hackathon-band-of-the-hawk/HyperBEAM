@@ -1,89 +1,50 @@
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyModule, PyList};
-use std::fs::File;
-use std::io::Read;
-use serde_json::Value;
-use pyo3::PyObject;
+// src/main.rs
 
-fn value_to_py(py: Python, value: &Value) -> PyResult<PyObject> {
-    let builtins = py.import("builtins")?;
+use pyrust_nn::*; // Import all public functions and structs from our lib
+use chrono::Local;
+use std::fs;
+use std::path::PathBuf;
 
-    match value {
-        Value::Null => Ok(py.None().into()),
+fn main() -> anyhow::Result<()> {
+    // === 1. SETUP ===
+    // Generate a single, unique session ID for this entire run.
+    let session_id = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    println!("{}\n--- Starting Pipeline Run ---\nSession ID: {}\n{}", "=".repeat(60), session_id, "=".repeat(60));
 
-        Value::Bool(b) => Ok(builtins.getattr("bool")?.call1(( *b, ))?.into()),
+    // Define the base directory for all outputs for this session.
+    let session_path = PathBuf::from("runs").join(&session_id);
 
-        Value::Number(n) if n.is_i64() => {
-            let i = n.as_i64().unwrap();
-            Ok(builtins.getattr("int")?.call1(( i, ))?.into())
-        }
+    // Define all the nested subdirectories for each step.
+    let full_finetune_path = session_path.join("finetune");
+    let lora_finetune_path = session_path.join("lora");
+    // let quantize_path = session_path.join("quantize");
+    // let gguf_path = session_path.join("gguf");
+    
+    // Create the top-level session directory. Sub-functions will create the rest.
+    fs::create_dir_all(&session_path)?;
 
-        Value::Number(n) if n.is_u64() => {
-            let u = n.as_u64().unwrap();
-            Ok(builtins.getattr("int")?.call1(( u, ))?.into())
-        }
+    // === 2. DEFINE PARAMETERS ===
+    let base_model_id = "Qwen/Qwen1.5-0.5B-Chat";
+    let dataset_file = "data.json";
 
-        Value::Number(n) if n.is_f64() => {
-            let f = n.as_f64().unwrap();
-            Ok(builtins.getattr("float")?.call1(( f, ))?.into())
-        }
+    let finetune_params = FinetuneParams {
+        dataset_path: dataset_file.to_string(),
+        num_epochs: Some(1),
+    };
 
-        Value::String(s) => Ok(builtins.getattr("str")?.call1(( s.as_str(), ))?.into()),
+    // === 3. EXECUTE WORKFLOW ===
+    
+    // Step A: Full fine-tuning
+    let finetuned_model_path = finetune_full(base_model_id, &finetune_params, &full_finetune_path)?;
+    println!("\n✅ Full fine-tuning complete. Model saved in: {:?}", finetuned_model_path);
 
-        Value::Array(arr) => {
-            let list = PyList::empty(py);
-            for item in arr {
-                list.append(value_to_py(py, item)?)?;
-            }
-            Ok(list.into())
-        }
-
-        Value::Object(map) => {
-            let dict = PyDict::new(py);
-            for (k, v) in map {
-                dict.set_item(k, value_to_py(py, v)?)?;
-            }
-            Ok(dict.into())
-        }
-
-        _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>("Unsupported JSON type")),
-    }
-}
-
-fn main() -> PyResult<()> {
-    let mut file = File::open("params.json").expect("Failed to open params.json");
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).expect("Failed to read params.json");
-    let params: Value = serde_json::from_str(&contents).expect("Invalid JSON");
-
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let sys = py.import("sys")?;
-        let path_attr = sys.getattr("path")?;
-        let path = path_attr.downcast::<PyList>()?;
-        
-        let current_dir = std::env::current_dir()?.to_string_lossy().to_string();
-        path.insert(0, &current_dir)?;
-
-        let py_params = PyDict::new(py);
-        if let Value::Object(obj) = &params {
-            for (k, v) in obj {
-                py_params.set_item(k, value_to_py(py, v)?)?;
-            }
-        }
-
-        PyModule::import(py, "finetune_full")?.getattr("fine_tune_full")?.call1((py_params.clone(),))?;
-
-        PyModule::import(py, "finetuning_lora")?.getattr("fine_tune_lora")?.call1((py_params.clone(),))?;
-        
-        PyModule::import(py, "inference")?.getattr("run_inference")?.call1((py_params.clone(),))?;
-        
-        PyModule::import(py, "quant")?.getattr("quantize_model")?.call1((py_params.clone(),))?;
-
-        PyModule::import(py, "lora_to_gguf")?.getattr("lora_to_gguf")?.call1((py_params.clone(),))?;
-
-        PyModule::import(py, "model_to_gguf")?.getattr("model_to_gguf")?.call1((py_params.clone(),))?;
-
-        Ok(())
-    })
+    // Step B: LoRA fine-tuning
+    let lora_adapter_path = finetune_lora(base_model_id, &finetune_params, &lora_finetune_path)?;
+    println!("\n✅ LoRA fine-tuning complete. Adapter saved in: {:?}", lora_adapter_path);
+    
+    // ... you would add subsequent steps here, like quantization and GGUF conversion,
+    // passing the output path from the previous step as input to the next.
+    
+    println!("\n{}\n--- Pipeline Run {} Complete! ---\n{}", "=".repeat(60), session_id, "=".repeat(60));
+    Ok(())
 }
