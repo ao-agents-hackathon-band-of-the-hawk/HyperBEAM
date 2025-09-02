@@ -1,16 +1,15 @@
 // src/main.rs
 
-use pyrust_nn::*; // Import all public functions and structs from your lib.rs
+use pyrust_nn::*; // Import all public functions and structs from lib.rs
 use std::env;
 use std::fs::{self, File};
 use std::path::PathBuf;
-use chrono::Local;
 use simplelog::{Config, LevelFilter, WriteLogger, CombinedLogger, TermLogger, TerminalMode};
 use anyhow::Result;
 
 fn main() -> Result<()> {
     // === 1. SETUP SESSION AND CENTRALIZED LOGGER (ONCE!) ===
-    let session_id = format!("run-{}", Local::now().format("%Y%m%d-%H%M%S"));
+    let session_id = "RandomSession";
     let session_path = PathBuf::from("runs").join(&session_id);
     fs::create_dir_all(&session_path)?;
 
@@ -26,19 +25,15 @@ fn main() -> Result<()> {
         WriteLogger::new(LevelFilter::Debug, Config::default(), File::create(&log_path)?),
     ]).expect("Failed to initialize the global logger");
     
-    // Initialize the bridge that captures Python logs and sends them to Rust's `log` facade.
-    pyo3_log::init();
-
     log::info!("--- Starting New Pipeline Run ---");
     log::info!("--- Session ID: {} ---", session_id);
     log::info!("--- All artifacts will be saved under: {:?} ---", &session_path);
     log::info!("--- Project Root: {:?} ---", &project_root);
     
-    // === 2. DEFINE PARAMETERS AND PATHS ===
+    // === 2. DEFINE PARAMETERS ===
     let base_model_id = "Qwen/Qwen1.5-0.5B-Chat";
     let dataset_file = "data.json";
 
-    // Define all the parameters for each step
     let finetune_full_params = FinetuneFullParams {
         dataset_path: dataset_file.to_string(),
         num_epochs: Some(1),
@@ -48,19 +43,20 @@ fn main() -> Result<()> {
 
     let finetune_lora_params = FinetuneLoraParams {
         dataset_path: dataset_file.to_string(),
-        num_epochs: Some(1),
+        num_epochs: Some(50),
         batch_size: Some(1),
         learning_rate: Some(0.00002),
         lora_rank: Some(8),
         lora_alpha: Some(32),
         lora_dropout: Some(0.05),
+        checkpoint_lora: "/home/mayan/HyperBEAM/native/pyrust_nn/runs/randomSession/finetune_lora".to_string(),
     };
     
     let gguf_params = ConvertToGgufParams {
         gguf_precision: "q8_0".to_string(),
     };
 
-    // === 3. EXECUTE THE FULL PIPELINE ===
+    // === 3. EXECUTE THE WORKFLOW ===
 
     // Step 1: LoRA Fine-tuning
     let lora_adapter_path = match finetune_lora(&session_id, base_model_id, &finetune_lora_params) {

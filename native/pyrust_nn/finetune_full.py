@@ -1,5 +1,7 @@
+# finetune_full.py (updated with ETA callback)
+
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer , AutoConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer , AutoConfig, TrainerCallback
 from datasets import  Dataset
 import json
 import gc
@@ -10,7 +12,12 @@ import logging
 
 
 logger = logging.getLogger(__name__)
-# --- END: CORRECTED LOGGING SETUP ---
+
+class ETACallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is not None and 'loss' in logs:  # Log at each logging step
+            if state.global_step > 0 and state.max_steps > 0:
+                logger.info(f"Step {state.global_step}/{state.max_steps} ")
 
 # Modified to accept the tokenizer as an argument
 def data_loader(dataset_path, tokenizer, sample_start=0, max_length=512):
@@ -110,7 +117,7 @@ def fine_tune_full(params):
     )
     
     torch.set_float32_matmul_precision('high')
-    trainer = Trainer(model=model, args=training_args, train_dataset=tokenized_dataset, tokenizer=tokenizer)
+    trainer = Trainer(model=model, args=training_args, train_dataset=tokenized_dataset, tokenizer=tokenizer, callbacks=[ETACallback()])
     trainer.train()
     trainer.save_model()
     tokenizer.save_pretrained(output_dir)
@@ -122,4 +129,3 @@ def fine_tune_full(params):
 if __name__ == "__main__":
     sample_params = {"dataset_path":"data.json", "output_dir": "models/finetuned"}
     fine_tune_full(sample_params)
-

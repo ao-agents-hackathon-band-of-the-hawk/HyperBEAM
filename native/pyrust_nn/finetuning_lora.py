@@ -1,9 +1,12 @@
+# finetuning_lora.py (updated with ETA callback)
+
 from transformers import (
     AutoModelForCausalLM, 
     AutoTokenizer, 
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling
+    DataCollatorForLanguageModeling,
+    TrainerCallback
 )
 
 from peft import LoraConfig, get_peft_model, PeftModel
@@ -15,7 +18,12 @@ import logging
 from datasets import Dataset 
 
 logger = logging.getLogger(__name__)
-# --- END: CORRECTED LOGGING SETUP ---
+
+class ETACallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is not None and 'loss' in logs:  # Log at each logging step
+            if state.global_step > 0 and state.max_steps > 0:
+                logger.info(f"Step {state.global_step}/{state.max_steps}")
 
 def data_loader(dataset_path, tokenizer, sample_start=0, max_length=512):
     """Loads dataset from JSON file and tokenizes it."""
@@ -121,6 +129,7 @@ def fine_tune_lora(params):
         train_dataset=train_dataset, 
         tokenizer=tokenizer,
         data_collator=data_collator,
+        callbacks=[ETACallback()],
     )
     
     trainer.train()

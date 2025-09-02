@@ -2,14 +2,14 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use pyo3::Bound; // Correct top-level import for Bound
+use pyo3::Bound;
 use serde::Serialize;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 
-// --- Public Parameter Structs for the API ---
+// --- Public Parameter & Result Structs ---
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FinetuneFullParams {
@@ -28,19 +28,18 @@ pub struct FinetuneLoraParams {
     pub lora_rank: Option<u32>,
     pub lora_alpha: Option<u32>,
     pub lora_dropout: Option<f32>,
+    pub checkpoint_lora: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct QuantizeParams {
-    pub precision: String, // e.g., "8-bit", "4-bit"
+    pub precision: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ConvertToGgufParams {
-    pub gguf_precision: String, // e.g., "q8_0", "f16"
+    pub gguf_precision: String,
 }
-
-// --- Public Result Structs ---
 
 #[derive(Debug, Clone)]
 pub struct InferenceResult {
@@ -52,7 +51,6 @@ pub struct QuantizationResult {
     pub saved_dir: String,
 }
 
-
 // --- Internal Helpers ---
 
 #[derive(Serialize)]
@@ -63,7 +61,6 @@ struct RunSummary<T: Serialize> {
     error_message: Option<String>,
 }
 
-/// Writes the final JSON summary for a step.
 fn write_summary<T: Serialize>(step_path: &Path, parameters: T, result: &Result<String>) -> Result<()> {
     let (status, output_path, error_message) = match result {
         Ok(path) => ("Success".to_string(), Some(path.clone()), None),
@@ -75,21 +72,26 @@ fn write_summary<T: Serialize>(step_path: &Path, parameters: T, result: &Result<
     Ok(())
 }
 
-/// A single, safe function to run a Python callback with the environment set up.
-fn with_python_env<F, T>(callback: F) -> Result<T>
+fn with_python_env<F, T>(session_id: &str, callback: F) -> Result<T>
 where
     F: FnOnce(Python) -> Result<T, PyErr>,
     T: Send,
 {
-    Python::with_gil(|py| {
-        // Forcefully configure Python's root logger to be fully verbose.
-        let logging = py.import("logging")?;
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("level", logging.getattr("DEBUG")?)?;
-        kwargs.set_item("force", true)?; 
-        logging.call_method("basicConfig", (), Some(kwargs))?;
+    let log_path = PathBuf::from("runs").join(session_id).join("pipeline.log");
 
-        // Correct, lifetime-safe pattern for sys.path modification
+    Python::with_gil(|py| {
+        // --- The Python Logging Bridge ---
+        let logging = py.import("logging")?;
+        let formatter = logging.call_method1("Formatter", ("%(asctime)s - %(levelname)s - [%(name)s] - %(message)s",))?;
+        let file_handler = logging.call_method1("FileHandler", (log_path.to_str().unwrap(),))?;
+        file_handler.call_method1("setLevel", (logging.getattr("DEBUG")?,))?;
+        file_handler.call_method1("setFormatter", (formatter,))?;
+        let root_logger = logging.call_method0("getLogger")?;
+        root_logger.call_method1("setLevel", (logging.getattr("DEBUG")?,))?;
+        root_logger.setattr("handlers", PyList::empty(py))?; // Clear existing handlers
+        root_logger.call_method1("addHandler", (file_handler,))?;
+
+        // --- The sys.path logic ---
         let sys = py.import("sys")?;
         let path_attr = sys.getattr("path")?;
         let path: &Bound<PyList> = path_attr.downcast()?;
@@ -108,7 +110,7 @@ pub fn finetune_full(session_id: &str, model_id: &str, params: &FinetuneFullPara
     fs::create_dir_all(&step_path)?;
     log::info!("--- Starting: Full Fine-tuning ---");
     
-    let result = with_python_env(|py| {
+    let result = with_python_env(session_id, |py| {
         let func = py.import("finetune_full")?.getattr("fine_tune_full")?;
         let py_params = PyDict::new(py);
         py_params.set_item("model_name", model_id)?;
@@ -130,7 +132,7 @@ pub fn finetune_lora(session_id: &str, model_id: &str, params: &FinetuneLoraPara
     fs::create_dir_all(&step_path)?;
     log::info!("--- Starting: LoRA Fine-tuning ---");
     
-    let result = with_python_env(|py| {
+    let result = with_python_env(session_id, |py| {
         let func = py.import("finetuning_lora")?.getattr("fine_tune_lora")?;
         let py_params = PyDict::new(py);
         py_params.set_item("model_name", model_id)?;
@@ -142,36 +144,12 @@ pub fn finetune_lora(session_id: &str, model_id: &str, params: &FinetuneLoraPara
         if let Some(val) = params.lora_rank { py_params.set_item("lora_rank", val)?; }
         if let Some(val) = params.lora_alpha { py_params.set_item("lora_alpha", val)?; }
         if let Some(val) = params.lora_dropout { py_params.set_item("lora_dropout", val)?; }
+        if let Some(val) = Some(&params.checkpoint_lora) { py_params.set_item("checkpoint_lora", val)?; }   
         func.call1((py_params,))?.extract()
     });
 
     write_summary(&step_path, params.clone(), &result)?;
     log::info!("--- Finished: LoRA Fine-tuning ---");
-    result
-}
-
-pub fn quantize(session_id: &str, model_path: &str, params: &QuantizeParams) -> Result<QuantizationResult> {
-    let step_path = PathBuf::from("runs").join(session_id).join("quantize");
-    fs::create_dir_all(&step_path)?;
-    log::info!("--- Starting: Quantization ---");
-    
-    let result = with_python_env(|py| {
-        let func = py.import("quant")?.getattr("quantize_model")?;
-        let py_params = PyDict::new(py);
-        py_params.set_item("model_name", model_path)?;
-        py_params.set_item("precision", &params.precision)?;
-        py_params.set_item("quant_output_dir", step_path.to_str())?;
-        
-        let result_obj = func.call1((py_params,))?;
-        let result_dict: &Bound<PyDict> = result_obj.downcast()?;
-        
-        let saved_dir: String = result_dict.get_item("saved_dir")?.unwrap().extract()?;
-        Ok(QuantizationResult { saved_dir })
-    });
-
-    let summary_result = result.as_ref().map(|r| r.saved_dir.clone()).map_err(|e| anyhow!(e.to_string()));
-    write_summary(&step_path, params.clone(), &summary_result)?;
-    log::info!("--- Finished: Quantization ---");
     result
 }
 
@@ -182,7 +160,7 @@ pub fn convert_model_to_gguf(session_id: &str, project_root: &Path, model_path: 
     
     let output_file = step_path.join("model.gguf");
 
-    let result = with_python_env(|py| {
+    let result = with_python_env(session_id, |py| {
         let func = py.import("model_to_gguf")?.getattr("model_to_gguf")?;
         let py_params = PyDict::new(py);
         py_params.set_item("project_root", project_root.to_str())?;
@@ -204,7 +182,7 @@ pub fn convert_lora_to_gguf(session_id: &str, project_root: &Path, base_model_id
 
     let output_file = step_path.join("lora_adapter.gguf");
 
-    let result = with_python_env(|py| {
+    let result = with_python_env(session_id, |py| {
         let func = py.import("lora_to_gguf")?.getattr("lora_to_gguf")?;
         let py_params = PyDict::new(py);
         py_params.set_item("project_root", project_root.to_str())?;
@@ -225,7 +203,7 @@ pub fn run_inference(session_id: &str, model_path: &str, prompt: &str) -> Result
     fs::create_dir_all(&step_path)?;
     log::info!("--- Starting: Inference ---");
     
-    let result = with_python_env(|py| {
+    let result = with_python_env(session_id, |py| {
         let func = py.import("inference")?.getattr("run_inference")?;
         let py_params = PyDict::new(py);
         py_params.set_item("model_name", model_path)?;
@@ -238,9 +216,20 @@ pub fn run_inference(session_id: &str, model_path: &str, prompt: &str) -> Result
         Ok(InferenceResult { content })
     });
     
-    // Summary is not strictly needed for simple inference, but we log the completion.
     let summary_result = result.as_ref().map(|r| r.content.clone()).map_err(|e| anyhow!(e.to_string()));
     write_summary(&step_path, prompt.to_string(), &summary_result)?;
     log::info!("--- Finished: Inference ---");
     result
+}
+
+pub fn get_status(session_id: &str, last_n: Option<usize>) -> Result<String> {
+    let log_path = PathBuf::from("runs").join(session_id).join("pipeline.log");
+    let content = fs::read_to_string(&log_path)?;
+    if let Some(n) = last_n {
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(n);
+        Ok(lines[start..].join("\n"))
+    } else {
+        Ok(content)
+    }
 }

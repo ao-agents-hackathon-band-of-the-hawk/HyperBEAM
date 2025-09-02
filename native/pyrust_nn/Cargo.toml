@@ -1,7 +1,7 @@
 [package]
 name = "pyrust_nn"
 version = "0.1.0"
-edition = "2024"  # Updated to 2021 for simplicity
+edition = "2021"  # Updated to 2021 for simplicity
 
 [lib]
 name = "pyrust_nn"
@@ -17,4 +17,3 @@ simplelog = "0.12"
 anyhow = "1.0.99"
 rustler = "0.36.2"
 chrono = "0.4"
-pyo3-log = "0.8"
