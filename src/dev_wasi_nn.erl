@@ -2,7 +2,7 @@
 %%% Implements wasi_nn API functions as imported functions by WASM modules
 -module(dev_wasi_nn).
 
--export([info/1, info/3, infer/3, infer_sec/3]).
+-export([info/1, info/3, infer/3, infer_sec/3, save_llm_response/2]). 
 
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -307,7 +307,8 @@ load_and_infer(M1, M2, Opts) ->
             {error, {exception, Error, Exception}}
     end.
 
-%% @doc Saves the LLM's text response to the session's response transcript file.
+%% @doc Saves the LLM response to a JSON list in the session directory,
+%% applying regex to filter out markdown and newlines.
 save_llm_response(SessionID, LLMResponse) ->
     ResponseAudiosPath = filename:join([?SESSIONS_DIR, binary_to_list(SessionID), "response-audios"]),
     ok = filelib:ensure_dir(filename:join(ResponseAudiosPath, "dummy.txt")),
@@ -323,8 +324,26 @@ save_llm_response(SessionID, LLMResponse) ->
             end;
         {error, enoent} -> []
     end,
+
+    % Stage 1: Remove multi-line code blocks entirely.
+    CleanedAfterCodeBlocks = re:replace(LLMResponse, "(?s)```.*?```", <<>>, [global, {return, binary}]),
+
+    % Stage 2: Remove common inline formatting characters.
+    CleanedAfterInline = re:replace(CleanedAfterCodeBlocks, "[\\*_`~]", <<>>, [global, {return, binary}]),
+
+    % Stage 3: Remove block-level markers from the start of each line.
+    BlockMarkersPattern = "^(#+\\s*|\\s*[-*]\\s+|\\s*\\d+\\.\\s+|>\\s*)",
+    SanitizedResponse = re:replace(CleanedAfterInline, BlockMarkersPattern, <<>>, [global, multiline, {return, binary}]),
     
-    NewList = CurrentList ++ [LLMResponse],
+    % --- NEW ---
+    % Stage 4: Replace one or more newline characters (CR/LF) with a single space.
+    CleanedNewlines = re:replace(SanitizedResponse, "[\\r\\n]+", <<" ">>, [global, {return, binary}]),
+
+    % Stage 5: Trim leading/trailing whitespace from the final result.
+    FinalResponse = re:replace(CleanedNewlines, "^\\s+|\\s+$", <<>>, [{return, binary}]),
+    % --- END NEW ---
+
+    NewList = CurrentList ++ [FinalResponse],
     file:write_file(JsonPath, hb_json:encode(NewList)).
 
 %% @doc Generate a unique session ID for each request
@@ -387,4 +406,48 @@ test_infer_and_save_response() ->
     [SavedResult] = hb_json:decode(JsonBinary),
     ?assertEqual(LLMResult, SavedResult).
 
+markdown_and_newline_filtering_test() ->
+    TestDir = ?SESSIONS_DIR,
+    SessionID = <<"test_session_with_markdown_and_newlines">>,
+
+    LLMResponseWithMarkdown = <<
+        "# Main Heading\n\nThis is a paragraph with **bold text**, *italic emphasis*, and some `inline code`.\n"
+        "Here is a list:\n"
+        "- First item\n"
+        "1. Second item\n"
+        "> This is a blockquote.\n"
+        "And here is a code block to be removed:\n"
+        "```erlang\n-module(test).\n```\n"
+        "The text continues after the block."
+    >>,
+
+    % --- UPDATED EXPECTED RESULT ---
+    % The expected output is now a single line of text with newlines replaced by spaces.
+    ExpectedSanitizedResponse = <<
+        "Main Heading This is a paragraph with bold text, italic emphasis, and some inline code. "
+        "Here is a list: First item Second item This is a blockquote. "
+        "And here is a code block to be removed: "
+        "The text continues after the block."
+    >>,
+
+    try
+        % 1. Execute the function under test
+        ok = save_llm_response(SessionID, LLMResponseWithMarkdown),
+
+        % 2. Verify the result
+        JsonPath = filename:join([?SESSIONS_DIR, binary_to_list(SessionID), "response-audios", "string-list.json"]),
+        {ok, JsonBinary} = file:read_file(JsonPath),
+        DecodedList = hb_json:decode(JsonBinary),
+
+        % 3. Assert that the list contains the correctly sanitized string
+        ?assertMatch([ExpectedSanitizedResponse], DecodedList)
+
+    after
+        % 4. Cleanup
+        ok
+    end.
+
 -endif.
+
+
+
