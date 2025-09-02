@@ -59,3 +59,4 @@ mkdocs-site-manifest.csv
 otp
 rebar3
 sessions
+arweave-keyfile-**.json
