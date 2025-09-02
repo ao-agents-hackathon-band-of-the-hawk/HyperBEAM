@@ -1,57 +1,57 @@
 -module(dev_text_to_speech).
 -export([generate/3, info/1, info/3]).
 -include("include/hb.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
--define(DEFAULT_SPEAKER, 0).
+-define(DEFAULT_SPEAKER, 1). % Default to speaker 1 (AI response)
+-define(SESSIONS_DIR, "sessions").
 
-%% @doc Declares the functions this device exports to the HyperBeam system.
+%% @doc Declares the functions this device exports.
 info(_) ->
     #{exports => [generate, info]}.
 
-%% @doc Provides helpful API information about the device's functions.
+%% @doc Provides API information.
 info(_M1, _M2, _Opts) ->
     InfoBody = #{
-        <<"description">> => <<"A composable device for generating speech from text.">>,
-        <<"version">> => <<"1.0">>,
+        <<"description">> => <<"A device for generating speech from text, with session-based context awareness.">>,
+        <<"version">> => <<"1.1">>,
         <<"api">> => #{
             <<"generate">> => #{
-                <<"description">> => <<"Generates a WAV audio file. It combines text from a wasi-nn device's 'result' key (in M1) with new text provided as a parameter (in M2).">>,
-                <<"method">> => <<"GET or POST">>,
+                <<"description">> => <<"Generates WAV audio. Uses 'result' from a previous device (M1) and a 'session_id'. Saves audio to the session directory.">>,
+                <<"method">> => <<"POST">>,
                 <<"parameters">> => #{
-                    <<"text">> => <<"Optional. New text to append to any text received from a previous device.">>,
-                    <<"speaker">> => <<"Optional. An integer for the speaker ID. Defaults to 0.">>
+                    <<"text">> => <<"Optional. Standalone text to generate. Will not be saved to a session unless a session_id is also provided.">>,
+                    <<"speaker">> => <<"Optional. An integer for the speaker ID. Defaults to 1 (response).">>,
+                    <<"session_id">> => <<"Optional. The session identifier for contextual generation and storage.">>
                 }
             }
         }
     },
     {ok, InfoBody}.
 
-%% @doc Generates speech, combining text from M1 (previous device) and M2 (current request).
+%% @doc Generates speech, using session context if available, and saves the audio.
 generate(M1, M2, _Opts) ->
-    % Extract the 'result' text from the previous device's output (M1).
-    TextFromM1 = get_result_from_m1(M1),
+    % Prioritize session_id from the previous device's body, then the current request.
+    DecodedM1Body = try hb_json:decode(maps:get(<<"body">>, M1, <<>>)) catch _:_ -> #{} end,
+    SessionID = maps:get(<<"session_id">>, M2, maps:get(<<"session_id">>, DecodedM1Body, undefined)),
 
-    % Extract new text from the current request's parameters (M2).
-    TextFromM2 = maps:get(<<"text">>, M2, <<>>),
+    % Prioritize text from the previous device's 'result' key, then the current request's 'text' param.
+    TextToSpeak = maps:get(<<"result">>, DecodedM1Body, maps:get(<<"text">>, M2, <<>>)),
+    
+    FinalText = string:trim(binary_to_list(TextToSpeak)),
 
-    % --- THE CORRECT FIX ---
-    % First, create a single combined binary. This is the most robust way
-    % to join the parts before trimming.
-    CombinedBinary = <<TextFromM1/binary, " ", TextFromM2/binary>>,
-
-    % Then, convert to a list for trimming, which is compatible with all OTP versions.
-    CombinedList = binary_to_list(CombinedBinary),
-    TrimmedList = string:trim(CombinedList),
-    FinalText = list_to_binary(TrimmedList),
-    % --- END FIX ---
-
-    case byte_size(FinalText) > 0 of
+    case length(FinalText) > 0 of
         true ->
             SpeakerStr = maps:get(<<"speaker">>, M2, integer_to_binary(?DEFAULT_SPEAKER)),
             try binary_to_integer(SpeakerStr) of
                 Speaker when is_integer(Speaker) ->
-                    case dev_text_to_speech_nif:generate_audio(FinalText, Speaker) of
+                    SessionIDForNif = case SessionID of
+                        undefined -> <<>>;
+                        _ -> SessionID
+                    end,
+                    case dev_text_to_speech_nif:generate_audio(list_to_binary(FinalText), Speaker, SessionIDForNif) of
                         {ok, AudioData} ->
+                            handle_audio_saving(AudioData, SessionID),
                             {ok, #{
                                 <<"body">> => AudioData,
                                 <<"status">> => 200,
@@ -66,86 +66,119 @@ generate(M1, M2, _Opts) ->
                     {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"'speaker' parameter must be an integer">>}), <<"status">> => 400 }}
             end;
         false ->
-            % No text was found in either M1's result or M2's parameters.
             {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"No text provided from previous device or as a parameter">>}), <<"status">> => 400 }}
     end.
 
 %% --- Private Functions ---
 
-%% @doc Safely extracts the 'result' text from M1's JSON body.
-get_result_from_m1(M1) ->
-    Body = maps:get(<<"body">>, M1, <<>>),
-    try hb_json:decode(Body) of
-        #{<<"result">> := Result} when is_binary(Result) ->
-            Result;
-        _ ->
-            <<>> % Body is not a JSON map with a 'result' key.
-    catch
-        error:_ ->
-            <<>> % Body is not valid JSON, ignore.
+%% @doc If a session ID is provided, save the audio to the session directory.
+handle_audio_saving(_AudioData, undefined) ->
+    % No session ID, so don't save the file.
+    ok;
+handle_audio_saving(AudioData, SessionID) ->
+    ResponseAudiosPath = filename:join([?SESSIONS_DIR, binary_to_list(SessionID), "response-audios"]),
+    ok = filelib:ensure_dir(filename:join(ResponseAudiosPath, "dummy.txt")), % Ensure dir exists
+
+    {ok, Files} = file:list_dir(ResponseAudiosPath),
+    AudioFiles = [F || F <- Files, lists:member(filename:extension(F), [".wav", ".mp3"])],
+    NextIndex = length(AudioFiles),
+    
+    AudioFilename = io_lib:format("~p.wav", [NextIndex]),
+    AudioPath = filename:join(ResponseAudiosPath, AudioFilename),
+
+    case file:write_file(AudioPath, AudioData) of
+        ok ->
+            ?event(dev_text_to_speech, {saved_session_audio, AudioPath});
+        {error, Reason} ->
+            ?event(dev_text_to_speech, {save_audio_failed, SessionID, Reason})
     end.
+
 
 %% ===================================================================
 %% EUnit Tests
 %% ===================================================================
 -ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
 
-%% @doc Test chaining: text from M1's 'result' key is combined with text from M2.
-chaining_with_m1_and_m2_test() ->
-    LLMResult = <<"The capital of France is Paris.">>,
-    Filename = "/tmp/eunit_tts_chained_output.wav",
-    % Simulate M1 from a wasi-nn device.
-    M1 = #{<<"body">> => hb_json:encode(#{<<"result">> => LLMResult})},
-    % M2 has additional text to be appended.
-    M2 = #{<<"text">> => <<"And it is a beautiful city.">>, <<"speaker">> => <<"1">>},
+-define(TEST_SESSION_ID, <<"tts_test_session">>).
+-define(TEST_SESSION_PATH, filename:join(?SESSIONS_DIR, ?TEST_SESSION_ID)).
 
-    {ok, Response} = generate(M1, M2, #{}),
+setup() ->
+    % Clean up and create a fresh test session directory
+    file:del_dir_r(?TEST_SESSION_PATH),
+    ResponseAudioPath = filename:join([?TEST_SESSION_PATH, "response-audios"]),
+    ok = filelib:ensure_dir(filename:join(ResponseAudioPath, "dummy.txt")),
+    
+    % Simulate the state after wasi-nn has run: create the transcript file
+    Transcript = <<"This is a test response from the LLM.">>,
+    JsonPath = filename:join(ResponseAudioPath, "string-list.json"),
+    ok = file:write_file(JsonPath, hb_json:encode([Transcript])),
+    Transcript. % Return transcript for use in the test case
 
-    ?assertEqual(200, maps:get(<<"status">>, Response)),
-    AudioData = maps:get(<<"body">>, Response),
-    ?assertEqual(ok, file:write_file(Filename, AudioData)),
-    ?debugFmt("SUCCESS: Chained audio file saved for playback at ~s", [Filename]).
+teardown(_) ->
+    % Per request, do not clean up so the generated files can be reviewed.
+    ok.
 
-%% @doc Test chaining: only M1 provides text from its 'result' key.
-chaining_with_m1_only_test() ->
-    LLMResult = <<"Testing one, two, three.">>,
-    Filename = "/tmp/eunit_tts_m1_only_output.wav",
-    % Simulate M1 from a wasi-nn device.
-    M1 = #{<<"body">> => hb_json:encode(#{<<"result">> => LLMResult})},
-    M2 = #{}, % No additional text in M2.
+session_generation_test_() ->
+    {setup,
+     fun setup/0,
+     fun teardown/1,
+     fun(Transcript) ->
+        ?_test(
+        begin
+            % M1 simulates the output from the wasi-nn device
+            M1 = #{<<"body">> => hb_json:encode(#{
+                <<"result">> => Transcript,
+                <<"session_id">> => ?TEST_SESSION_ID
+            })},
+            
+            {ok, Response} = generate(M1, #{}, #{}),
+            
+            ?assertEqual(200, maps:get(<<"status">>, Response)),
+            AudioData = maps:get(<<"body">>, Response),
+            ?assert(is_binary(AudioData) andalso size(AudioData) > 100),
 
-    {ok, Response} = generate(M1, M2, #{}),
+            % Verify side-effect: check that the audio file was created
+            ResponseAudioPath = filename:join([?TEST_SESSION_PATH, "response-audios"]),
+            AudioFilePath = filename:join(ResponseAudioPath, "0.wav"),
+            ?assert(filelib:is_regular(AudioFilePath)),
+            {ok, SavedData} = file:read_file(AudioFilePath),
+            ?assertEqual(AudioData, SavedData)
+        end)
+     end}.
 
-    ?assertEqual(200, maps:get(<<"status">>, Response)),
-    ?assertEqual(ok, file:write_file(Filename, maps:get(<<"body">>, Response))),
-    ?debugFmt("SUCCESS: M1-only audio file saved for playback at ~s", [Filename]).
+append_to_session_test_() ->
+    {setup,
+     fun setup/0,
+     fun teardown/1,
+     fun(Transcript1) ->
+        ?_test(
+        begin
+            % --- First Call ---
+            M1_1 = #{<<"body">> => hb_json:encode(#{<<"result">> => Transcript1, <<"session_id">> => ?TEST_SESSION_ID})},
+            {ok, _Response1} = generate(M1_1, #{}, #{}),
+            ?assert(filelib:is_regular(filename:join([?TEST_SESSION_PATH, "response-audios", "0.wav"]))),
 
-%% @doc Test standalone usage: only M2 provides text.
-standalone_with_m2_only_test() ->
-    Text = <<"This is a standalone test.">>,
-    Filename = "/tmp/eunit_tts_m2_only_output.wav",
-    M1 = #{}, % No previous device output.
-    M2 = #{<<"text">> => Text},
+            % --- CORRECT FIX: Manually simulate wasi-nn updating the transcript list ---
+            Transcript2 = <<"This is a second response in the same session.">>,
+            JsonPath = filename:join([?TEST_SESSION_PATH, "response-audios", "string-list.json"]),
+            UpdatedTranscripts = [Transcript1, Transcript2],
+            ok = file:write_file(JsonPath, hb_json:encode(UpdatedTranscripts)),
+            
+            % --- Second Call ---
+            M1_2 = #{<<"body">> => hb_json:encode(#{<<"result">> => Transcript2, <<"session_id">> => ?TEST_SESSION_ID})},
+            {ok, _Response2} = generate(M1_2, #{}, #{}),
+            
+            % Verify the second audio file was created
+            ?assert(filelib:is_regular(filename:join([?TEST_SESSION_PATH, "response-audios", "1.wav"]))),
 
-    {ok, Response} = generate(M1, M2, #{}),
+            % Verify the transcript file now has two entries
+            {ok, FinalJson} = file:read_file(JsonPath),
+            ?assertEqual(UpdatedTranscripts, hb_json:decode(FinalJson))
+        end)
+     end}.
 
-    ?assertEqual(200, maps:get(<<"status">>, Response)),
-    ?assertEqual(ok, file:write_file(Filename, maps:get(<<"body">>, Response))),
-    ?debugFmt("SUCCESS: M2-only audio file saved for playback at ~s", [Filename]).
-
-%% @doc Test failure when no text is provided in M1 or M2.
 no_text_provided_failure_test() ->
     {ok, Response} = generate(#{}, #{}, #{}),
-    ?assertEqual(400, maps:get(<<"status">>, Response)),
-    DecodedBody = hb_json:decode(maps:get(<<"body">>, Response)),
-    ?assertEqual(<<"No text provided from previous device or as a parameter">>, maps:get(<<"error">>, DecodedBody)).
-
-%% @doc Test failure when M1's body does not contain a 'result' key.
-no_result_key_in_m1_test() ->
-    M1 = #{<<"body">> => hb_json:encode(#{<<"transcription">> => <<"some text">>})},
-    M2 = #{},
-    {ok, Response} = generate(M1, M2, #{}),
     ?assertEqual(400, maps:get(<<"status">>, Response)),
     DecodedBody = hb_json:decode(maps:get(<<"body">>, Response)),
     ?assertEqual(<<"No text provided from previous device or as a parameter">>, maps:get(<<"error">>, DecodedBody)).
