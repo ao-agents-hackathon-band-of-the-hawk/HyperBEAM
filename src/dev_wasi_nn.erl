@@ -7,6 +7,8 @@
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-define(SESSIONS_DIR, "sessions").
+
 %% @doc Exported function for getting device info, controls which functions are
 %% exposed via the device API.
 info(_) ->
@@ -238,22 +240,15 @@ load_and_infer(M1, M2, Opts) ->
     UserConfigStr = hb_util:list(UserConfig),
     
     Prompt = maps:get(<<"prompt">>, M2, <<>>),
-    % Check for piped transcription in body (from previous device like speech-to-text)
     Body = maps:get(<<"body">>, M1, <<>>),
-    % Safely decode body once, handling potential JSON decode errors
-    DecodedBody = try hb_json:decode(Body) catch _:_ -> not_json end,
-    PipedTranscript =
-        case DecodedBody of
-            #{<<"transcription">> := Transcript} when is_binary(Transcript) ->
-                Transcript;
-            _ ->
-                undefined
-        end,
+    DecodedBody = try hb_json:decode(Body) catch _:_ -> #{} end,
+
+    PipedTranscript = maps:get(<<"transcription">>, DecodedBody, undefined),
+    
     EffectivePrompt =
         case PipedTranscript of
-            undefined ->
-                Prompt;
-            _ ->
+            undefined -> Prompt;
+            _ when is_binary(PipedTranscript) ->
                 case Prompt of
                     <<>> -> PipedTranscript;
                     _ -> <<Prompt/binary, " ", PipedTranscript/binary>>
@@ -261,110 +256,135 @@ load_and_infer(M1, M2, Opts) ->
         end,
     EffectivePromptStr = binary_to_list(EffectivePrompt),
 
-    UserSessionId = maps:get(<<"session_id">>, M2, undefined),
+    UserSessionId = maps:get(<<"session_id">>, M2, maps:get(<<"session_id">>, DecodedBody, undefined)),
     Reference = maps:get(<<"reference">>, M2, undefined),
     Worker = maps:get(<<"worker">>, M2, undefined),
 
-    SessionId =
-        case maps:get(<<"session_id">>, M2, undefined) of
+    SessionIdBin =
+        case UserSessionId of
             undefined -> generate_session_id(Opts);
-            UserSessId -> binary_to_list(UserSessId)
+            Bin when is_binary(Bin) -> Bin
         end,
+    SessionIdList = binary_to_list(SessionIdBin),
 
 
     try
-        % Use persistent context management (fast if model already loaded)
         case dev_wasi_nn_nif:ensure_model_loaded(ModelPathStr, ModelConfigStr) of
             ok ->
-                % Create or reuse session-specific execution context
-                case dev_wasi_nn_nif:init_session(SessionId) of
+                case dev_wasi_nn_nif:init_session(SessionIdList) of
                     {ok, SessionResource} ->
-                        % Run inference with session-specific context
                         case dev_wasi_nn_nif:run_inference(SessionResource, EffectivePromptStr, UserConfigStr) of
                             {ok, Output} ->
                                 ?event(dev_wasi_nn, {inference_success, Reference}),
-                                ResponseBody =
-                                    case PipedTranscript of
-                                        undefined ->
-                                            #{<<"result">> => Output};
-                                        _ ->
-                                            #{<<"result">> => Output, <<"transcription">> => PipedTranscript}
-                                    end,                                
+                                save_llm_response(SessionIdBin, Output),
+                                ResponseBody = #{
+                                    <<"result">> => Output,
+                                    <<"transcription">> => PipedTranscript,
+                                    <<"session_id">> => SessionIdBin
+                                },
                                 {ok,
                                  #{<<"body">> => hb_json:encode(ResponseBody),
-                                   <<"X-Session">> => list_to_binary(SessionId),
+                                   <<"X-Session">> => SessionIdBin,
                                    <<"X-Reference">> => Reference,
                                    <<"X-Worker">> => Worker,
                                    <<"action">> => <<"Infer-Response">>,
                                    <<"status">> => 200}};
                             {error, Reason} ->
-                                ?event(dev_wasi_nn, {inference_failed, SessionId, Reason}),
+                                ?event(dev_wasi_nn, {inference_failed, SessionIdList, Reason}),
                                 {error, Reason}
                         end;
                     {error, Reason2} ->
-                        ?event(dev_wasi_nn, {session_init_failed, SessionId, Reason2}),
+                        ?event(dev_wasi_nn, {session_init_failed, SessionIdList, Reason2}),
                         {error, Reason2}
                 end;
             {error, Reason3} ->
-                ?event(dev_wasi_nn, {model_load_failed, SessionId, Model, Reason3}),
+                ?event(dev_wasi_nn, {model_load_failed, SessionIdList, Model, Reason3}),
                 {error, Reason3}
         end
     catch
         Error:Exception ->
-            ?event(dev_wasi_nn, {inference_exception, SessionId, Error, Exception}),
+            ?event(dev_wasi_nn, {inference_exception, SessionIdList, Error, Exception}),
             {error, {exception, Error, Exception}}
     end.
 
+%% @doc Saves the LLM's text response to the session's response transcript file.
+save_llm_response(SessionID, LLMResponse) ->
+    ResponseAudiosPath = filename:join([?SESSIONS_DIR, binary_to_list(SessionID), "response-audios"]),
+    ok = filelib:ensure_dir(filename:join(ResponseAudiosPath, "dummy.txt")),
+    JsonPath = filename:join(ResponseAudiosPath, "string-list.json"),
+    
+    CurrentList = case file:read_file(JsonPath) of
+        {ok, JsonBinary} ->
+            try hb_json:decode(JsonBinary) of
+                Decoded when is_list(Decoded) -> Decoded;
+                _ -> []
+            catch
+                _:_ -> []
+            end;
+        {error, enoent} -> []
+    end,
+    
+    NewList = CurrentList ++ [LLMResponse],
+    file:write_file(JsonPath, hb_json:encode(NewList)).
+
 %% @doc Generate a unique session ID for each request
 generate_session_id(_Opts) ->
-    % Use a combination of timestamp and random number for uniqueness
     Timestamp = erlang:system_time(microsecond),
     Random = rand:uniform(999),
     SessionId = io_lib:format("req_~p_~p", [Timestamp, Random]),
-    lists:flatten(SessionId).
+    list_to_binary(lists:flatten(SessionId)).
 
+%% ===================================================================
 %% EUnit Tests
+%% ===================================================================
 -ifdef(TEST).
 
-%% Test infer with piped transcript
-infer_piped_transcript_test() ->
-    ModelPath = <<"models/gemma.gguf">>,
-    Config = hb_json:encode(#{<<"model">> => #{<<"n_ctx">> => 8192}}),
-    Transcript = <<"This is a test transcript.">>,
-    Prompt = <<"Analyze this:">>,
-    Body = hb_json:encode(#{<<"transcription">> => Transcript}),
+-define(TEST_SESSION_ID, <<"wasi_nn_session_test">>).
+-define(TEST_SESSION_PATH, filename:join(?SESSIONS_DIR, ?TEST_SESSION_ID)).
+
+setup() ->
+    % Clean up before test and create the required structure
+    file:del_dir_r(?TEST_SESSION_PATH),
+    ResponseAudioPath = filename:join([?TEST_SESSION_PATH, "response-audios"]),
+    ok = filelib:ensure_dir(filename:join(ResponseAudioPath, "dummy.txt")),
+    ok.
+
+teardown(_) ->
+    % dont Clean up the session directory after the test
+
+    ok.
+
+session_based_inference_test_() ->
+    {foreach, fun setup/0, fun teardown/1, [fun test_infer_and_save_response/0]}.
+
+test_infer_and_save_response() ->
+    Transcript = <<"Who are you?">>,
+    % M1 simulates the output from the speech-to-text device
+    M1 = #{<<"body">> => hb_json:encode(#{
+        <<"transcription">> => Transcript,
+        <<"session_id">> => ?TEST_SESSION_ID
+    })},
+    % M2 is the direct request to the wasi-nn device
+    M2 = #{<<"model_path">> => <<"models/gemma.gguf">>, % Assumes a test model exists
+           <<"prompt">> => <<"In one sentence, respond to this question:">>},
     
-    M2 = #{<<"model_path">> => ModelPath,
-           <<"config">> => Config,
-           <<"prompt">> => Prompt},
-           
-    M1 = #{<<"body">> => Body},
-    
-    % Assuming NIF returns a mock output
-    % In real test, this would run actual inference if model is available
     {ok, Response} = infer(M1, M2, #{}),
     
-    DecodedBody = hb_json:decode(maps:get(<<"body">>, Response)),
-    ?assertMatch(#{<<"result">> := _, <<"transcription">> := Transcript}, DecodedBody),
-    
-    % Verify effective prompt was used (indirectly via response existence)
-    ?assert(maps:is_key(<<"result">>, DecodedBody)),
-    ?assert(maps:is_key(<<"transcription">>, DecodedBody)).
-
-%% Test infer without piped transcript
-load_and_infer_no_transcript_test() ->
-    ModelPath = <<"models/gemma.gguf">>,
-    Config = hb_json:encode(#{<<"model">> => #{<<"n_ctx">> => 8192}}),
-    Prompt = <<"Who are you?">>,
-    
-    M2 = #{<<"model_path">> => ModelPath,
-           <<"config">> => Config,
-           <<"prompt">> => Prompt},
-    
-    {ok, Response} = infer(#{}, M2, #{}),
+    ?assertEqual(200, maps:get(<<"status">>, Response)),
     
     DecodedBody = hb_json:decode(maps:get(<<"body">>, Response)),
-    ?assertMatch(#{<<"result">> := _}, DecodedBody),
-    ?assertNot(maps:is_key(<<"transcription">>, DecodedBody)).
+    ?assertMatch(#{<<"result">> := _,
+                   <<"transcription">> := Transcript,
+                   <<"session_id">> := ?TEST_SESSION_ID}, DecodedBody),
+    
+    LLMResult = maps:get(<<"result">>, DecodedBody),
+    ?assert(is_binary(LLMResult) andalso size(LLMResult) > 0),
+    
+    % Verify side-effect: check if the response was saved correctly
+    JsonPath = filename:join([?TEST_SESSION_PATH, "response-audios", "string-list.json"]),
+    ?assert(filelib:is_regular(JsonPath)),
+    {ok, JsonBinary} = file:read_file(JsonPath),
+    [SavedResult] = hb_json:decode(JsonBinary),
+    ?assertEqual(LLMResult, SavedResult).
 
 -endif.

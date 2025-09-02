@@ -58,3 +58,4 @@ mkdocs-site-manifest.csv
 .venv
 otp
 rebar3
+sessions
