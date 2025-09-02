@@ -137,7 +137,7 @@ fn generate_audio<'a>(
 
             let kwargs = PyDict::new(py);
             kwargs.set_item("context", context)?;
-            kwargs.set_item("max_audio_length_ms", 90_000)?;
+            kwargs.set_item("max_audio_length_ms", 900_000)?;
 
             // FIX: Pass kwargs by reference
             let audio_tensor =
