@@ -3,6 +3,7 @@
 #include "../include/wasi_nn_nif.h"
 #include "../include/wasi_nn_logging.h"
 #include <pthread.h>
+#include <limits.h>  // Add this include to define PATH_MAX
 
 #define LIB_PATH "./priv/libwasi_nn_backend.so"
 #define MAX_MODEL_PATH 256
@@ -50,7 +51,13 @@ static void llama_session_destructor(ErlNifEnv* env, void* obj)
 static int load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
 {
     DRV_DEBUG("Load nif start\n");
-    g_wasi_nn_functions.handle = dlopen(LIB_PATH, RTLD_LAZY);
+        char priv_dir[PATH_MAX];
+    if (!enif_get_string(env, load_info, priv_dir, sizeof(priv_dir), ERL_NIF_LATIN1)) {
+        return 1;
+    }
+    char lib_path[PATH_MAX];
+    snprintf(lib_path, sizeof(lib_path), "%s/libwasi_nn_backend.so", priv_dir);
+    g_wasi_nn_functions.handle = dlopen(lib_path, RTLD_LAZY);
     if (!g_wasi_nn_functions.handle) {
         DRV_DEBUG("Failed to load wasi library: %s\n", dlerror());
         return 1;
