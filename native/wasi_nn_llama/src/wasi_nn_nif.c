@@ -4,7 +4,7 @@
 #include "../include/wasi_nn_logging.h"
 #include <pthread.h>
 
-#define LIB_PATH "./native/wasi_nn_llama/libwasi_nn_backend.so"
+#define LIB_PATH "./priv/libwasi_nn_backend.so"
 #define MAX_MODEL_PATH 256
 #define MAX_INPUT_SIZE 4096
 #define MAX_CONFIG_SIZE 4096
