@@ -60,3 +60,4 @@ otp
 rebar3
 sessions
 arweave-keyfile-**.json
+wallet.json
