@@ -64,8 +64,8 @@ def data_loader(dataset_path, tokenizer, sample_start=0, max_length=512):
 def fine_tune_full(params):
     """Full fine-tuning function."""
     # The 'global tokenizer' line is no longer needed
-    model_name = params.get("model_name", "Qwen/Qwen1.5-1.8B-Chat")
-    dataset_path = params["dataset_path"]
+    model_name =  "Qwen/Qwen1.5-1.8B-Chat"
+    dataset_path = "data.json"
     output_dir = params.get("output_dir", "models/finetuned")
     num_epochs = params.get("num_epochs", 1)
     batch_size = params.get("batch_size", 1)
