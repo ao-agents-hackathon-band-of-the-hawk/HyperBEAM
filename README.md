@@ -4,7 +4,7 @@
 
 ## Prerequisites
 - Ubuntu 22.04
-- NVIDIA GPU
+- NVIDIA GPU (CUDA ARCH to be specified in the Makefile before compiling)
 
 ## Setup Instructions
 
