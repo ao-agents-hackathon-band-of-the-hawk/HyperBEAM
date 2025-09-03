@@ -42,7 +42,7 @@ info(_Msg1, _Msg2, _Opts) ->
 
 infer(M1, M2, Opts) ->
     TxID = maps:get(<<"model-id">>, M2, undefined),
-    DefaultModel = <<"Qwen1.5-1.8B-Chat">>,
+    DefaultModel = <<"qwen.gguf">>,
 
     ModelPath =
         case TxID of
