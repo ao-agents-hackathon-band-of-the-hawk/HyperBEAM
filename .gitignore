@@ -58,3 +58,6 @@ mkdocs-site-manifest.csv
 .venv
 otp
 rebar3
+sessions
+arweave-keyfile-**.json
+wallet.json

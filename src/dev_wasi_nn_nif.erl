@@ -15,7 +15,7 @@
 init() ->
     PrivDir = code:priv_dir(hb),
     Path = filename:join(PrivDir, "wasi_nn"),
-    erlang:load_nif(Path, 0).
+    erlang:load_nif(Path, PrivDir).
 
 %% @doc Ensures the correct model is loaded in the singleton backend.
 ensure_model_loaded(ModelPath, Config) ->

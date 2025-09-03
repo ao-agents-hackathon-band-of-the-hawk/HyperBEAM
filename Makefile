@@ -32,7 +32,7 @@ else
     WAMR_BUILD_TARGET = X86_64
 endif
 
-wamr: $(WAMR_DIR)/lib/libvmlib.a
+wamr: $(WAMR_DIR)/lib/libvmlib.a wasi_nn
 wasi_nn: $(WASI_NN_DIR)/lib/libwasi_nn_backend.so
 debug: debug-clean $(WAMR_DIR)
 	HB_DEBUG=1 make $(WAMR_DIR)/lib/libvmlib.a
@@ -79,14 +79,14 @@ $(WAMR_DIR)/lib/libvmlib.a: $(WAMR_DIR)
 
 $(WASI_NN_DIR):
 	git clone \
-		https://github.com/AO-ZKP/wasi_nn_backend.git \
+		https://github.com/ao-agents-hackathon-band-of-the-hawk/wasi_nn_backend.git \
 		$(WASI_NN_DIR) \
 		-b main \
 		--single-branch
 
 $(WASI_NN_DIR)/lib/libwasi_nn_backend.so: $(WASI_NN_DIR)
-	make -C $(WASI_NN_DIR) build
-	cp $(WASI_NN_DIR)/build/libwasi_nn_backend.so ./native/wasi_nn_llama
+	make -C $(WASI_NN_DIR) build ARCH=90
+	cp $(WASI_NN_DIR)/build/libwasi_nn_backend.so ./priv
 clean:
 	rebar3 clean
 
