@@ -12,3 +12,4 @@ temp_merged
 *.gguf
 *.log
 !*.json
+runs/*

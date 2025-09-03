@@ -1,7 +1,12 @@
 [package]
 name = "pyrust_nn"
 version = "0.1.0"
-edition = "2024"  # Updated to 2021 for simplicity
+edition = "2021"  # Updated to 2021 for simplicity
+
+[lib]
+name = "pyrust_nn"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.25.1", features = ["auto-initialize"] }
@@ -11,3 +16,4 @@ log = "0.4"
 simplelog = "0.12"
 anyhow = "1.0.99"
 rustler = "0.36.2"
+chrono = "0.4"
