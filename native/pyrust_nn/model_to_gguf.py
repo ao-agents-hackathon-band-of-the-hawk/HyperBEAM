@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 def model_to_gguf(params):
     # --- START OF FIX ---
     # Get the project root from the parameters provided by Rust.
-    project_root = params.get("project_root", ".")
-    script_path = os.path.join(project_root, "llama.cpp", "convert_hf_to_gguf.py")
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_path = os.path.join(current_script_dir, "llama.cpp", "convert_hf_to_gguf.py")
     
     if not os.path.exists(script_path):
         raise FileNotFoundError(f"Conversion script not found at expected path: {script_path}")

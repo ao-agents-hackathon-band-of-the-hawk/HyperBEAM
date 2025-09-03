@@ -1,7 +1,8 @@
 -module(dev_training_nif).
 -export([
     finetune_lora_nif/3,
-    check_python_env/1
+    check_python_env/1,
+    convert_lora_to_gguf_nif/4
 ]).
 -on_load(init/0).
 
@@ -13,6 +14,11 @@ init() ->
 %% @doc NIF wrapper for finetune_lora.
 -spec finetune_lora_nif(binary(), binary(), map()) -> {ok, binary()} | {error, binary()}.
 finetune_lora_nif(_SessionID, _ModelID, _Params) ->
+    erlang:nif_error(nif_not_loaded).
+
+%% @doc NIF wrapper for converting LoRA adapter to GGUF.
+-spec convert_lora_to_gguf_nif(binary(), binary(), binary(), map()) -> {ok, binary()} | {error, binary()}.
+convert_lora_to_gguf_nif(_SessionID, _BaseModelID, _AdapterPath, _Params) ->
     erlang:nif_error(nif_not_loaded).
 
 %% @doc NIF wrapper for a simple Python environment check.
@@ -31,36 +37,45 @@ check_python_env_test() ->
     ?assertMatch({ok, <<"Successfully imported torch and transformers.">>}, check_python_env(SessionID)),
     file:del_dir_r(filename:join(["runs", binary_to_list(SessionID)])).
 
-%% @doc This is an integration test and requires a full Python environment.
-finetune_lora_nif_success_test() ->
-    SessionID = <<"eunit-lora-session">>,
+%% @doc This is an integration test. It fine-tunes a LoRA adapter and then converts it to GGUF.
+finetune_lora_and_convert_to_gguf_test() ->
+    SessionID = <<"eunit-lora-gguf-session">>,
     ModelID = <<"Qwen/Qwen1.5-0.5B-Chat">>,
     DataFile = <<"native/pyrust_nn/data.json">>,
 
-    % FIX: Use atoms for the map keys to match the manual Rust decoder.
-    Params = #{
+    LoraParams = #{
         dataset_path => DataFile,
         num_epochs => 1,
         batch_size => 1,
-        lora_rank => 4,
-        lora_alpha => 8,
-        lora_dropout => 0.05
+        lora_rank => 4
     },
 
-    Result = finetune_lora_nif(SessionID, ModelID, Params),
+    LoraResult = finetune_lora_nif(SessionID, ModelID, LoraParams),
 
-    ?assertMatch({ok, _OutputPath}, Result),
-    case Result of
-        {ok, Path} ->
-            ?assert(is_binary(Path)),
-            ?assert(filelib:is_dir(binary_to_list(Path))),
-            ?debugFmt("LoRA adapter successfully saved to: ~s", [Path]);
-        {error, Reason} ->
-            ?debugFmt("LoRA fine-tuning failed unexpectedly: ~p", [Reason]),
+    ?assertMatch({ok, _AdapterPath}, LoraResult),
+    case LoraResult of
+        {ok, AdapterPath} ->
+            ?debugFmt("LoRA adapter saved to: ~s", [AdapterPath]),
+            ?assert(filelib:is_dir(binary_to_list(AdapterPath))),
+
+            % Immediately convert the trained adapter to GGUF
+            GGUFParams = #{gguf_precision => <<"q8_0">>},
+            GGUFResult = convert_lora_to_gguf_nif(SessionID, ModelID, AdapterPath, GGUFParams),
+
+            ?assertMatch({ok, _GGUFPath}, GGUFResult),
+            case GGUFResult of
+                {ok, GGUFPath} ->
+                    ?debugFmt("GGUF file saved to: ~s", [GGUFPath]),
+                    ?assert(filelib:is_regular(binary_to_list(GGUFPath)));
+                {error, GGUFReason} ->
+                    ?debugFmt("GGUF conversion failed: ~p", [GGUFReason]),
+                    ?assert(false)
+            end;
+        {error, LoraReason} ->
+            ?debugFmt("LoRA fine-tuning failed: ~p", [LoraReason]),
             ?assert(false)
     end,
     file:del_dir_r(filename:join(["runs", binary_to_list(SessionID)])).
-
 
 finetune_lora_nif_failure_test() ->
     SessionID = <<"eunit-lora-fail-session">>,

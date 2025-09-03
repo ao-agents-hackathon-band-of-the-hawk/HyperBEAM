@@ -23,7 +23,8 @@ mod atoms {
         lora_rank,
         lora_alpha,
         lora_dropout,
-        checkpoint_lora
+        checkpoint_lora,
+        gguf_precision
     }
 }
 
@@ -106,6 +107,36 @@ impl From<FinetuneLoraParamsNif> for FinetuneLoraParams {
             lora_alpha: nif_params.lora_alpha,
             lora_dropout: nif_params.lora_dropout,
             checkpoint_lora: nif_params.checkpoint_lora.unwrap_or_default(),
+        }
+    }
+}
+
+// --- New Structs for GGUF Conversion ---
+#[derive(Clone, Debug)]
+struct ConvertToGgufParamsNif {
+    gguf_precision: String,
+}
+
+impl<'a> Decoder<'a> for ConvertToGgufParamsNif {
+    fn decode(term: Term<'a>) -> NifResult<Self> {
+        let iter: MapIterator = term.decode()?;
+        let mut gguf_precision = None;
+
+        for (key, value) in iter {
+            if key.eq(&atoms::gguf_precision().to_term(term.get_env())) {
+                gguf_precision = Some(value.decode()?);
+            }
+        }
+
+        let gguf_precision = gguf_precision.ok_or(RustlerError::BadArg)?;
+        Ok(ConvertToGgufParamsNif { gguf_precision })
+    }
+}
+
+impl From<ConvertToGgufParamsNif> for ConvertToGgufParams {
+    fn from(nif_params: ConvertToGgufParamsNif) -> Self {
+        ConvertToGgufParams {
+            gguf_precision: nif_params.gguf_precision,
         }
     }
 }
@@ -365,5 +396,23 @@ fn check_python_env<'a>(env: Env<'a>, session_id: String) -> NifResult<Term<'a>>
     }
 }
 
-// Modern syntax: The `#[rustler::nif]` attribute handles registration.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn convert_lora_to_gguf_nif<'a>(env: Env<'a>, session_id: String, base_model_id: String, adapter_path: String, params: ConvertToGgufParamsNif) -> NifResult<Term<'a>> {
+    let internal_params: ConvertToGgufParams = params.into();
+    
+    let project_root = match env::current_dir() {
+        Ok(path) => path,
+        Err(e) => {
+            let err_msg = format!("Failed to get current directory: {}", e);
+            return Ok((atoms::error(), err_msg).encode(env));
+        }
+    };
+
+    match convert_lora_to_gguf(&session_id, &project_root, &base_model_id, &adapter_path, &internal_params) {
+        Ok(output_path) => Ok((atoms::ok(), output_path).encode(env)),
+        Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
+    }
+}
+
+// The `#[rustler::nif]` attribute handles registration automatically.
 rustler::init!("dev_training_nif");
