@@ -1,5 +1,38 @@
 ![hyperbeam_logo-thin-3](https://github.com/user-attachments/assets/fcca891c-137e-4022-beff-360eb2a0d05e)
 
+# How to Run
+
+## Prerequisites
+- Ubuntu 22.04
+- NVIDIA GPU
+
+## Setup Instructions
+
+1. **Set up the development environment**  
+   Run the following command to install NVIDIA libraries and configure the environment:
+   ```bash
+   ./setup.sh
+   ```
+
+2. **Activate the Python virtual environment**  
+   Load environment variables and activate the virtual environment with:
+   ```bash
+   source .venv/bin/activate
+   ```
+
+3. **Compile the `restart` module**  
+   Navigate to the `restart` directory and compile the module:
+   ```bash
+   cd restart && cargo install --path .
+   ```
+
+4. **Run the application**  
+   Execute the following command to start the application:
+   ```bash
+   rebar-shell-restart . "rebar3 as genesis_wasm shell"
+   ```
+
+
 This repository contains a reference implementation of AO-Core, along with an
 Erlang-based (BEAM) client implementing a number of devices for the protocol.
 
@@ -298,3 +331,4 @@ by [Forward Research](https://fwd.arweave.net). Pull Requests are always welcome
 
 To get started building on HyperBEAM, check out the [hacking on HyperBEAM](./docs/misc/hacking-on-hyperbeam.md)
 guide.
+
