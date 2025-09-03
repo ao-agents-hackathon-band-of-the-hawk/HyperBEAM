@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         lora_rank: Some(8),
         lora_alpha: Some(32),
         lora_dropout: Some(0.05),
-        checkpoint_lora: "/home/mayan/HyperBEAM/native/pyrust_nn/runs/randomSession/finetune_lora".to_string(),
+        checkpoint_lora: "".to_string(),
     };
     
     let gguf_params = ConvertToGgufParams {

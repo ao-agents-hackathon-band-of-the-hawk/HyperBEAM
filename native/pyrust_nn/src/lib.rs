@@ -8,7 +8,107 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
+use rustler::{Decoder, Env, Error as RustlerError, NifResult, Term, Encoder};
+use rustler::types::map::MapIterator;
 
+// Add this module for Erlang atoms
+mod atoms {
+    rustler::atoms! {
+        ok,
+        error,
+        dataset_path,
+        num_epochs,
+        batch_size,
+        learning_rate,
+        lora_rank,
+        lora_alpha,
+        lora_dropout,
+        checkpoint_lora
+    }
+}
+
+// FIX: This is now a plain struct. We will implement Decoder for it manually.
+#[derive(Clone, Debug)]
+struct FinetuneLoraParamsNif {
+    dataset_path: String,
+    num_epochs: Option<u32>,
+    batch_size: Option<u32>,
+    learning_rate: Option<f32>,
+    lora_rank: Option<u32>,
+    lora_alpha: Option<u32>,
+    lora_dropout: Option<f32>,
+    checkpoint_lora: Option<String>,
+}   
+
+// FIX: Here is the manual implementation of the Decoder trait.
+// This code iterates over an Erlang map and populates the struct fields.
+impl<'a> Decoder<'a> for FinetuneLoraParamsNif {
+    fn decode(term: Term<'a>) -> NifResult<Self> {
+        let iter: MapIterator = term.decode()?;
+        
+        // Use Option fields to track which keys have been seen.
+        let mut dataset_path = None;
+        let mut num_epochs = None;
+        let mut batch_size = None;
+        let mut learning_rate = None;
+        let mut lora_rank = None;
+        let mut lora_alpha = None;
+        let mut lora_dropout = None;
+        let mut checkpoint_lora = None;
+
+        for (key, value) in iter {
+            if key.eq(&atoms::dataset_path().to_term(term.get_env())) {
+                dataset_path = Some(value.decode()?);
+            } else if key.eq(&atoms::num_epochs().to_term(term.get_env())) {
+                num_epochs = Some(value.decode()?);
+            } else if key.eq(&atoms::batch_size().to_term(term.get_env())) {
+                batch_size = Some(value.decode()?);
+            } else if key.eq(&atoms::learning_rate().to_term(term.get_env())) {
+                learning_rate = Some(value.decode()?);
+            } else if key.eq(&atoms::lora_rank().to_term(term.get_env())) {
+                lora_rank = Some(value.decode()?);
+            } else if key.eq(&atoms::lora_alpha().to_term(term.get_env())) {
+                lora_alpha = Some(value.decode()?);
+            } else if key.eq(&atoms::lora_dropout().to_term(term.get_env())) {
+                lora_dropout = Some(value.decode()?);
+            } else if key.eq(&atoms::checkpoint_lora().to_term(term.get_env())) {
+                checkpoint_lora = Some(value.decode()?);
+            }
+        }
+
+        // The `dataset_path` field is required.
+        let dataset_path = dataset_path.ok_or(RustlerError::BadArg)?;
+
+        Ok(FinetuneLoraParamsNif {
+            dataset_path,
+            num_epochs,
+            batch_size,
+            learning_rate,
+            lora_rank,
+            lora_alpha,
+            lora_dropout,
+            checkpoint_lora,
+        })
+    }
+}
+
+
+// --- The rest of the Rust file remains the same ---
+// Conversion from the NIF struct to the internal struct.
+impl From<FinetuneLoraParamsNif> for FinetuneLoraParams {
+    fn from(nif_params: FinetuneLoraParamsNif) -> Self {
+        FinetuneLoraParams {
+            dataset_path: nif_params.dataset_path,
+            num_epochs: nif_params.num_epochs,
+            batch_size: nif_params.batch_size,
+            learning_rate: nif_params.learning_rate,
+            lora_rank: nif_params.lora_rank,
+            lora_alpha: nif_params.lora_alpha,
+            lora_dropout: nif_params.lora_dropout,
+            checkpoint_lora: nif_params.checkpoint_lora.unwrap_or_default(),
+        }
+    }
+}
 // --- Public Parameter & Result Structs ---
 
 #[derive(Clone, Debug, Serialize)]
@@ -95,7 +195,7 @@ where
         let sys = py.import("sys")?;
         let path_attr = sys.getattr("path")?;
         let path: &Bound<PyList> = path_attr.downcast()?;
-        let current_dir = env::current_dir()?.to_str().unwrap().to_string();
+        let current_dir = env!("CARGO_MANIFEST_DIR").to_string();
         if !path.contains(&current_dir)? {
             path.insert(0, &current_dir)?;
         }
@@ -233,3 +333,37 @@ pub fn get_status(session_id: &str, last_n: Option<usize>) -> Result<String> {
         Ok(content)
     }
 }
+// NIF wrapper for finetune_lora.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn finetune_lora_nif<'a>(env: Env<'a>, session_id: String, model_id: String, params: FinetuneLoraParamsNif) -> NifResult<Term<'a>> {
+    let internal_params: FinetuneLoraParams = params.into();
+    
+    match finetune_lora(&session_id, &model_id, &internal_params) {
+        Ok(output_path) => Ok((atoms::ok(), output_path).encode(env)),
+        Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
+    }
+}
+
+// NIF for checking Python environment.
+#[rustler::nif(schedule = "DirtyCpu")]
+fn check_python_env<'a>(env: Env<'a>, session_id: String) -> NifResult<Term<'a>> {
+    let session_path = std::path::PathBuf::from("runs").join(&session_id);
+    if let Err(e) = std::fs::create_dir_all(&session_path) {
+        let err_msg = format!("Failed to create session directory: {}", e);
+        return Ok((atoms::error(), err_msg).encode(env));
+    }
+
+    let result = with_python_env(&session_id, |py| {
+        py.import("torch")?;
+        py.import("transformers")?;
+        Ok("Successfully imported torch and transformers.".to_string())
+    });
+
+    match result {
+        Ok(output) => Ok((atoms::ok(), output).encode(env)),
+        Err(e) => Ok((atoms::error(), e.to_string()).encode(env)),
+    }
+}
+
+// Modern syntax: The `#[rustler::nif]` attribute handles registration.
+rustler::init!("dev_training_nif");
