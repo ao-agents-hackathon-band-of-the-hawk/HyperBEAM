@@ -63,7 +63,7 @@ cleanup_all_contexts() ->
 basic_inference_test_() ->
     ?_test(
         begin
-            Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Path = "models/Qwen1.5-1.8B-Chat",
             Config = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
             SessionId = "test_session_1",
             Prompt = "What is the meaning of life",
@@ -85,7 +85,7 @@ basic_inference_test_() ->
 session_management_test_() ->
     ?_test(
         begin
-            Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Path = "models/Qwen1.5-1.8B-Chat",
             Config = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
 
             % Load the model.
@@ -118,7 +118,7 @@ session_management_test_() ->
 inference_with_options_test_() ->
     ?_test(
         begin
-            Path = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Path = "models/Qwen1.5-1.8B-Chat",
             Config = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
             Prompt = "Write one short sentence about the weather",
 
@@ -149,7 +149,7 @@ inference_with_options_test_() ->
 model_switching_with_config_test_() ->
     ?_test(
         begin
-            Path1 = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            Path1 = "models/Qwen1.5-1.8B-Chat",
             Path2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf",
             Config1 = "{\"n_gpu_layers\":98,\"ctx_size\":2048}",
             Config2 = "{\"n_gpu_layers\":48,\"ctx_size\":1024}",
@@ -199,7 +199,7 @@ model_switching_with_config_test_() ->
 verify_segfault_is_fixed_test_() ->
     ?_test(
         begin
-            ModelPath1 = "models/qwen2.5-14b-instruct-q2_k.gguf",
+            ModelPath1 = "models/Qwen1.5-1.8B-Chat",
             ModelPath2 = "models/ISrbGzQot05rs_HKC08O_SmkipYQnqgB1yC3mjZZeEo.gguf", % A different model
             ConfigMap = #{
                 <<"model">> => #{ <<"n_gpu_layers">> => 99, <<"ctx_size">> => 2048 },
