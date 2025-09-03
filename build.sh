@@ -13,3 +13,4 @@ build_nif() {
 
 build_nif "speech_to_text"
 build_nif "text_to_speech"
+build_nif "pyrust_nn"
