@@ -42,7 +42,7 @@ info(_Msg1, _Msg2, _Opts) ->
 
 infer(M1, M2, Opts) ->
     TxID = maps:get(<<"model-id">>, M2, undefined),
-    DefaultModel = <<"qwen.gguf">>,
+    DefaultModel = <<"Qwen1.5-1.8B-Chat.gguf">>,
 
     ModelPath =
         case TxID of
@@ -418,7 +418,7 @@ test_infer_and_save_response() ->
         <<"session_id">> => ?TEST_SESSION_ID
     })},
     % M2 is the direct request to the wasi-nn device
-    M2 = #{<<"model_path">> => <<"models/qwen.gguf">>, % Assumes a test model exists
+    M2 = #{<<"model_path">> => <<"models/Qwen1.5-1.8B-Chat.gguf">>, % Assumes a test model exists
            <<"prompt">> => <<"In one sentence, respond to this question:">>},
     
     {ok, Response} = infer(M1, M2, #{}),
