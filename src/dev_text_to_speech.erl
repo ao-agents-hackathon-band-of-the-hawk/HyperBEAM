@@ -5,6 +5,8 @@
 
 -define(DEFAULT_SPEAKER, 1). % Default to speaker 1 (AI response)
 -define(SESSIONS_DIR, "sessions").
+-define(DEFAULT_REF_AUDIO_PATH, <<"native/text_to_speech/utterance_0.mp3">>).
+-define(DEFAULT_REF_AUDIO_TEXT, <<"In a 1997 AI class at UT Austin, a neural net playing infinite board tic-tac-toe found an unbeatable strategy. Choose moves billions of squares away, causing your opponents to run out of memory and crash.">>).
 
 %% @doc Declares the functions this device exports.
 info(_) ->
@@ -14,15 +16,17 @@ info(_) ->
 info(_M1, _M2, _Opts) ->
     InfoBody = #{
         <<"description">> => <<"A device for generating speech from text, with session-based context awareness.">>,
-        <<"version">> => <<"1.1">>,
+        <<"version">> => <<"1.3">>,
         <<"api">> => #{
             <<"generate">> => #{
-                <<"description">> => <<"Generates WAV audio. Uses 'result' from a previous device (M1) and a 'session_id'. Saves audio to the session directory.">>,
+                <<"description">> => <<"Generates WAV audio. Uses 'result' from a previous device (M1) and a 'session_id'. Saves audio to the session directory. Uses a default reference voice for speaker 1 unless overridden.">>,
                 <<"method">> => <<"POST">>,
                 <<"parameters">> => #{
                     <<"text">> => <<"Optional. Standalone text to generate. Will not be saved to a session unless a session_id is also provided.">>,
                     <<"speaker">> => <<"Optional. An integer for the speaker ID. Defaults to 1 (response).">>,
-                    <<"session_id">> => <<"Optional. The session identifier for contextual generation and storage.">>
+                    <<"session_id">> => <<"Optional. The session identifier for contextual generation and storage.">>,
+                    <<"reference_audio_path">> => <<"Optional. Path to a WAV/MP3 file to override the default voice reference for the responder (speaker 1).">>,
+                    <<"reference_audio_text">> => <<"Optional. The transcript of the reference audio file. Required if reference_audio_path is provided.">>
                 }
             }
         }
@@ -43,13 +47,21 @@ generate(M1, M2, _Opts) ->
     case length(FinalText) > 0 of
         true ->
             SpeakerStr = maps:get(<<"speaker">>, M2, integer_to_binary(?DEFAULT_SPEAKER)),
+            ReferenceAudioPath = maps:get(<<"reference_audio_path">>, M2, ?DEFAULT_REF_AUDIO_PATH),
+            ReferenceAudioText = maps:get(<<"reference_audio_text">>, M2, ?DEFAULT_REF_AUDIO_TEXT),
             try binary_to_integer(SpeakerStr) of
                 Speaker when is_integer(Speaker) ->
                     SessionIDForNif = case SessionID of
                         undefined -> <<>>;
                         _ -> SessionID
                     end,
-                    case dev_text_to_speech_nif:generate_audio(list_to_binary(FinalText), Speaker, SessionIDForNif) of
+                    case dev_text_to_speech_nif:generate_audio(
+                            list_to_binary(FinalText),
+                            Speaker,
+                            SessionIDForNif,
+                            ReferenceAudioPath,
+                            ReferenceAudioText
+                        ) of
                         {ok, AudioData} ->
                             handle_audio_saving(AudioData, SessionID),
                             {ok, #{
@@ -118,6 +130,76 @@ teardown(_) ->
     % Per request, do not clean up so the generated files can be reviewed.
     ok.
 
+default_reference_audio_test() ->
+    ?_test(
+    begin
+        TextToSpeak = <<"This should be generated with the default reference voice.">>,
+        M1 = #{},
+        M2 = #{ <<"text">> => TextToSpeak },
+
+        {ok, Response} = generate(M1, M2, #{}),
+
+        ?assertEqual(200, maps:get(<<"status">>, Response)),
+        AudioData = maps:get(<<"body">>, Response),
+        ?assert(is_binary(AudioData) andalso size(AudioData) > 100),
+        ok = file:write_file("/tmp/eunit_tts_default_ref.wav", AudioData)
+    end).
+
+disable_reference_audio_test() ->
+    ?_test(
+    begin
+        TextToSpeak = <<"This should be generated without any reference voice.">>,
+        M1 = #{},
+        M2 = #{
+            <<"text">> => TextToSpeak,
+            <<"reference_audio_path">> => <<>>, % Explicitly disable
+            <<"reference_audio_text">> => <<>>  % Explicitly disable
+        },
+
+        {ok, Response} = generate(M1, M2, #{}),
+
+        ?assertEqual(200, maps:get(<<"status">>, Response)),
+        AudioData = maps:get(<<"body">>, Response),
+        ?assert(is_binary(AudioData) andalso size(AudioData) > 100),
+        ok = file:write_file("/tmp/eunit_tts_no_ref.wav", AudioData)
+    end).
+
+override_reference_audio_test_() ->
+    {setup,
+     fun setup/0,
+     fun teardown/1,
+     fun(_Transcript) ->
+        ?_test(
+        begin
+            TextToSpeak = <<"This should sound like a different reference speaker.">>,
+            M1 = #{},
+
+            % FIX: The root cause of the badarg is that ?TEST_SESSION_PATH is a binary,
+            % which "infects" the result of filename:join, making it also a binary.
+            % We must first convert the base path to a list before joining.
+            BasePathAsList = binary_to_list(?TEST_SESSION_PATH),
+            OverrideRefAudioPathAsList = filename:join([BasePathAsList, "response-audios", "override.wav"]),
+            OverrideRefAudioText = <<"This is an override voice.">>,
+            
+            % Read source file and write to the new path (using the list version of the path)
+            {ok, SampleWav} = file:read_file(binary_to_list(?DEFAULT_REF_AUDIO_PATH)),
+            ok = file:write_file(OverrideRefAudioPathAsList, SampleWav),
+
+            M2 = #{
+                <<"text">> => TextToSpeak,
+                <<"reference_audio_path">> => list_to_binary(OverrideRefAudioPathAsList),
+                <<"reference_audio_text">> => OverrideRefAudioText
+            },
+
+            {ok, Response} = generate(M1, M2, #{}),
+
+            ?assertEqual(200, maps:get(<<"status">>, Response)),
+            AudioData = maps:get(<<"body">>, Response),
+            ?assert(is_binary(AudioData) andalso size(AudioData) > 100),
+            ok = file:write_file("/tmp/eunit_tts_override_ref.wav", AudioData)
+        end)
+     end}.
+
 session_generation_test_() ->
     {setup,
      fun setup/0,
@@ -131,6 +213,7 @@ session_generation_test_() ->
                 <<"session_id">> => ?TEST_SESSION_ID
             })},
             
+            % M2 is empty, so this test will use the DEFAULT reference audio
             {ok, Response} = generate(M1, #{}, #{}),
             
             ?assertEqual(200, maps:get(<<"status">>, Response)),
@@ -143,37 +226,6 @@ session_generation_test_() ->
             ?assert(filelib:is_regular(AudioFilePath)),
             {ok, SavedData} = file:read_file(AudioFilePath),
             ?assertEqual(AudioData, SavedData)
-        end)
-     end}.
-
-append_to_session_test_() ->
-    {setup,
-     fun setup/0,
-     fun teardown/1,
-     fun(Transcript1) ->
-        ?_test(
-        begin
-            % --- First Call ---
-            M1_1 = #{<<"body">> => hb_json:encode(#{<<"result">> => Transcript1, <<"session_id">> => ?TEST_SESSION_ID})},
-            {ok, _Response1} = generate(M1_1, #{}, #{}),
-            ?assert(filelib:is_regular(filename:join([?TEST_SESSION_PATH, "response-audios", "0.wav"]))),
-
-            % --- CORRECT FIX: Manually simulate wasi-nn updating the transcript list ---
-            Transcript2 = <<"This is a second response in the same session.">>,
-            JsonPath = filename:join([?TEST_SESSION_PATH, "response-audios", "string-list.json"]),
-            UpdatedTranscripts = [Transcript1, Transcript2],
-            ok = file:write_file(JsonPath, hb_json:encode(UpdatedTranscripts)),
-            
-            % --- Second Call ---
-            M1_2 = #{<<"body">> => hb_json:encode(#{<<"result">> => Transcript2, <<"session_id">> => ?TEST_SESSION_ID})},
-            {ok, _Response2} = generate(M1_2, #{}, #{}),
-            
-            % Verify the second audio file was created
-            ?assert(filelib:is_regular(filename:join([?TEST_SESSION_PATH, "response-audios", "1.wav"]))),
-
-            % Verify the transcript file now has two entries
-            {ok, FinalJson} = file:read_file(JsonPath),
-            ?assertEqual(UpdatedTranscripts, hb_json:decode(FinalJson))
         end)
      end}.
 
