@@ -418,7 +418,7 @@ test_infer_and_save_response() ->
         <<"session_id">> => ?TEST_SESSION_ID
     })},
     % M2 is the direct request to the wasi-nn device
-    M2 = #{<<"model_path">> => <<"models/Qwen1.5-1.8B-Chat">>, % Assumes a test model exists
+    M2 = #{<<"model_path">> => <<"models/qwen-1.5-1.8b-chat.gguf">>, % Assumes a test model exists
            <<"prompt">> => <<"In one sentence, respond to this question:">>},
     
     {ok, Response} = infer(M1, M2, #{}),
