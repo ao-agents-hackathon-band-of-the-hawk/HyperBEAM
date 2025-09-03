@@ -181,7 +181,6 @@ setup() ->
     ok.
 
 teardown(_) ->
-    file:del_dir_r(filename:join("runs", binary_to_list(?TEST_SESSION))),
     ok.
 
 full_pipeline_test_() ->
