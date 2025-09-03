@@ -44,3 +44,11 @@ modify src/dev_text_to_speech.erl
 
 
 [Technical Documentation](https://github.com/ao-agents-hackathon-band-of-the-hawk/technical_doc)
+
+
+## Devices we implemented
+
+1. **~speech-to-text@1.0** Whisper implementation for speech to text
+2. **~text-to-speech@1.0** Text to audio implementation via CSM by sesame
+3. **~wasi-nn@1.0** with lora support extension to the wasi_nn_backend
+4. **~training@1.0** support for model training and fine-tuning on HyperBEAM natively
