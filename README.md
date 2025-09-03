@@ -31,3 +31,16 @@
    ```bash
    rebar-shell-restart . "rebar3 as genesis_wasm shell"
    ```
+
+
+For refernce audios
+modify src/dev_text_to_speech.erl
+```erlang
+-define(DEFAULT_SPEAKER, 1). % Default to speaker 1 (AI response)
+-define(SESSIONS_DIR, "sessions").
+-define(DEFAULT_REF_AUDIO_PATH, <<"native/text_to_speech/utterance_0.mp3">>).
+-define(DEFAULT_REF_AUDIO_TEXT, <<"In a 1997 AI class at UT Austin, a neural net playing infinite board tic-tac-toe found an unbeatable strategy. Choose moves billions of squares away, causing your opponents to run out of memory and crash.">>).
+```
+
+
+[Technical Documentation](https://github.com/ao-agents-hackathon-band-of-the-hawk/technical_doc)
