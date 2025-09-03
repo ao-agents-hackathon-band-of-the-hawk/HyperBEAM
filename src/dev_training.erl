@@ -1,226 +1,260 @@
 -module(dev_training).
--export([finetune_lora/3, check_python_env/3, info/1, info/3]).
+-export([train/3, convert/3, train_and_convert/3, info/1, info/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-define(DEFAULT_BASE_MODEL, <<"Qwen/Qwen1.5-0.5B-Chat">>).
+-define(DEFAULT_GGUF_PRECISION, <<"q8_0">>).
+
 %% @doc Declares the functions this device exports.
 info(_) ->
-    #{exports => [finetune_lora, check_python_env, info]}.
+    #{exports => [train, convert, train_and_convert, info]}.
 
-%% @doc Provides API information for the training device.
+%% @doc Provides API information for all functions.
 info(_M1, _M2, _Opts) ->
     InfoBody = #{
-        <<"description">> => <<"A device for orchestrating AI model training pipelines, such as LoRA fine-tuning.">>,
+        <<"description">> => <<"A device for fine-tuning LoRA adapters and converting them to GGUF format.">>,
         <<"version">> => <<"1.0">>,
         <<"api">> => #{
-            <<"finetune_lora">> => #{
-                <<"description">> => <<"Initiates a LoRA fine-tuning job. All parameters are passed in the request body. Returns the path to the trained LoRA adapter upon completion.">>,
+            <<"train">> => #{
+                <<"description">> => <<"1) Fine-tunes a LoRA adapter and saves the result as safetensors in a session directory.">>,
                 <<"method">> => <<"POST">>,
-                <<"parameters">> => #{
-                    <<"session_id">> => <<"Required. A unique identifier for the training session. All artifacts will be stored in a directory named after this ID.">>,
-                    <<"model_id">> => <<"Required. The Hugging Face model identifier for the base model to be fine-tuned (e.g., 'Qwen/Qwen1.5-0.5B-Chat').">>,
-                    <<"dataset_path">> => <<"Required. The path to the training data file (e.g., 'native/pyrust_nn/data.json').">>,
-                    <<"num_epochs">> => <<"Optional. Number of training epochs.">>,
-                    <<"batch_size">> => <<"Optional. Training batch size.">>,
-                    <<"learning_rate">> => <<"Optional. The learning rate for the optimizer.">>,
-                    <<"lora_rank">> => <<"Optional. The rank of the LoRA update matrices.">>,
-                    <<"lora_alpha">> => <<"Optional. The alpha parameter for LoRA scaling.">>,
-                    <<"lora_dropout">> => <<"Optional. Dropout probability for LoRA layers.">>,
-                    <<"checkpoint_lora">> => <<"Optional. Path to an existing LoRA adapter to continue training from.">>
-                }
+                <<"parameters">> => get_training_params_doc(<<"Required.">>)
             },
-            <<"check_python_env">> => #{
-                <<"description">> => <<"Verifies that the Python environment is set up correctly and essential libraries like 'torch' and 'transformers' can be imported.">>,
+            <<"convert">> => #{
+                <<"description">> => <<"2) Converts an existing LoRA adapter (safetensors) from a session into GGUF format.">>,
                 <<"method">> => <<"POST">>,
-                <<"parameters">> => #{
-                    <<"session_id">> => <<"Required. A unique session ID to create a log file for the check.">>
-                }
+                <<"parameters">> => get_conversion_params_doc()
+            },
+            <<"train_and_convert">> => #{
+                <<"description">> => <<"3) A full pipeline that fine-tunes a LoRA adapter and then immediately converts it to GGUF format.">>,
+                <<"method">> => <<"POST">>,
+                <<"parameters">> => maps:merge(
+                    get_training_params_doc(<<"Required.">>),
+                    get_conversion_params_doc()
+                )
             }
         }
     },
     {ok, InfoBody}.
 
-%% @doc Initiates a LoRA fine-tuning job.
-finetune_lora(_M1, M2, _Opts) ->
-    case {maps:get(<<"session_id">>, M2, undefined), maps:get(<<"model_id">>, M2, undefined)} of
-        {undefined, _} ->
-            {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"Missing required parameter: 'session_id'">>}), <<"status">> => 400 }};
-        {_, undefined} ->
-            {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"Missing required parameter: 'model_id'">>}), <<"status">> => 400 }};
-        {SessionID, ModelID} ->
-            NifParams = to_atom_map(M2),
-            case maps:is_key(dataset_path, NifParams) of
-                true ->
-                    case dev_training_nif:finetune_lora_nif(SessionID, ModelID, NifParams) of
-                        {ok, OutputPath} ->
-                            {ok, #{
-                                <<"body">> => hb_json:encode(#{
-                                    <<"status">> => <<"success">>,
-                                    <<"message">> => <<"LoRA fine-tuning completed.">>,
-                                    <<"adapter_path">> => OutputPath
-                                }),
-                                <<"status">> => 200
-                            }};
-                        {error, Reason} ->
-                            Error = iolist_to_binary(io_lib:format("~p", [Reason])),
-                            {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"LoRA fine-tuning failed">>, <<"reason">> => Error}), <<"status">> => 500 }}
-                    end;
-                false ->
-                    {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"Missing required parameter: 'dataset_path'">>}), <<"status">> => 400 }}
-            end
+%% @doc 1) Fine-tunes a LoRA adapter (safetensors).
+train(_M1, M2, _Opts) ->
+    case parse_training_params(M2) of
+        {ok, {SessionID, ModelID, LoraParams}} ->
+            case dev_training_nif:finetune_lora_nif(SessionID, ModelID, LoraParams) of
+                {ok, AdapterPath} ->
+                    ResponseBody = hb_json:encode(#{
+                        <<"status">> => <<"success">>,
+                        <<"adapter_path">> => AdapterPath,
+                        <<"session_id">> => SessionID
+                    }),
+                    {ok, #{ <<"body">> => ResponseBody, <<"status">> => 200 }};
+                {error, Reason} ->
+                    error_response(500, <<"LoRA training failed">>, Reason)
+            end;
+        {error, Reason} ->
+            error_response(400, <<"Invalid parameters">>, Reason)
     end.
 
-%% @doc Checks the Python environment.
-check_python_env(_M1, M2, _Opts) ->
+%% @doc 2) Converts an existing safetensor adapter to GGUF.
+convert(_M1, M2, _Opts) ->
     case maps:get(<<"session_id">>, M2, undefined) of
         undefined ->
-            {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"Missing required parameter: 'session_id'">>}), <<"status">> => 400 }};
+            error_response(400, <<"Missing required parameter">>, <<"session_id">>);
         SessionID ->
-            case dev_training_nif:check_python_env(SessionID) of
-                {ok, Message} ->
-                    {ok, #{
-                        <<"body">> => hb_json:encode(#{
-                            <<"status">> => <<"success">>,
-                            <<"message">> => Message
-                        }),
-                        <<"status">> => 200
-                    }};
-                {error, Reason} ->
-                    Error = iolist_to_binary(io_lib:format("~p", [Reason])),
-                    {ok, #{ <<"body">> => hb_json:encode(#{<<"error">> => <<"Python environment check failed">>, <<"reason">> => Error}), <<"status">> => 500 }}
+            AdapterPath = filename:join(["runs", binary_to_list(SessionID), "finetune_lora"]),
+            case filelib:is_dir(AdapterPath) of
+                true ->
+                    {BaseModelID, GGUFParams} = parse_conversion_params(M2),
+                    case dev_training_nif:convert_lora_to_gguf_nif(SessionID, BaseModelID, list_to_binary(AdapterPath), GGUFParams) of
+                        {ok, GGUFPath} ->
+                             ResponseBody = hb_json:encode(#{
+                                <<"status">> => <<"success">>,
+                                <<"gguf_path">> => GGUFPath,
+                                <<"session_id">> => SessionID
+                            }),
+                            {ok, #{ <<"body">> => ResponseBody, <<"status">> => 200 }};
+                        {error, Reason} ->
+                            error_response(500, <<"GGUF conversion failed">>, Reason)
+                    end;
+                false ->
+                    error_response(404, <<"LoRA adapter directory not found for session">>, #{
+                        <<"session_id">> => SessionID,
+                        <<"expected_path">> => list_to_binary(AdapterPath)
+                    })
             end
     end.
 
 
-%% --- Private Functions ---
+%% @doc 3) Fine-tunes and then converts to GGUF.
+train_and_convert(_M1, M2, _Opts) ->
+    case parse_training_params(M2) of
+        {ok, {SessionID, ModelID, LoraParams}} ->
+            case dev_training_nif:finetune_lora_nif(SessionID, ModelID, LoraParams) of
+                {ok, AdapterPath} ->
+                    io:format("LoRA training successful, adapter at: ~s~n", [AdapterPath]),
+                    {BaseModelID, GGUFParams} = parse_conversion_params(M2),
+                    case dev_training_nif:convert_lora_to_gguf_nif(SessionID, BaseModelID, AdapterPath, GGUFParams) of
+                        {ok, GGUFPath} ->
+                            ResponseBody = hb_json:encode(#{
+                                <<"status">> => <<"success">>,
+                                <<"adapter_path">> => AdapterPath,
+                                <<"gguf_path">> => GGUFPath,
+                                <<"session_id">> => SessionID
+                            }),
+                            {ok, #{ <<"body">> => ResponseBody, <<"status">> => 200 }};
+                        {error, ConvReason} ->
+                             error_response(500, <<"GGUF conversion failed after training">>, ConvReason)
+                    end;
+                {error, TrainReason} ->
+                    error_response(500, <<"LoRA training failed">>, TrainReason)
+            end;
+        {error, Reason} ->
+            error_response(400, <<"Invalid parameters">>, Reason)
+    end.
 
-%% @doc Converts a map with binary keys to a map with atom keys for the NIF.
-%% Also converts numeric values passed as strings into number types.
-to_atom_map(BinMap) ->
-    ValidKeys = [
-        <<"dataset_path">>, <<"num_epochs">>, <<"batch_size">>,
-        <<"learning_rate">>, <<"lora_rank">>, <<"lora_alpha">>,
-        <<"lora_dropout">>, <<"checkpoint_lora">>
-    ],
-    maps:fold(
-        fun(K, V, Acc) ->
-            case is_binary(K) andalso lists:member(K, ValidKeys) of
-                true ->
-                    Value = try
-                        case is_binary(V) of
-                            true ->
-                                try binary_to_integer(V)
-                                catch error:badarg ->
-                                    try binary_to_float(V)
-                                    catch error:badarg -> V
-                                    end
-                                end;
-                            false -> V
-                        end
-                    catch
-                        _:_ -> V
-                    end,
-                    Acc#{binary_to_atom(K, utf8) => Value};
-                false ->
-                    Acc % Ignore keys that are not valid or not binaries
+%% --- Private Helper Functions ---
+
+get_training_params_doc(SessionIDRequirement) ->
+    #{
+        <<"session_id">> => SessionIDRequirement,
+        <<"model_id">> => iolist_to_binary(io_lib:format(<<"Optional. The base model ID from Hugging Face. Defaults to ~s.">>, [?DEFAULT_BASE_MODEL])),
+        <<"dataset_path">> => <<"Required. Path to the training data JSON file.">>,
+        <<"num_epochs">> => <<"Optional. Number of training epochs.">>,
+        <<"batch_size">> => <<"Optional. Training batch size.">>,
+        <<"lora_rank">> => <<"Optional. The rank for the LoRA matrices.">>,
+        <<"lora_alpha">> => <<"Optional. The alpha parameter for LoRA.">>,
+        <<"lora_dropout">> => <<"Optional. Dropout probability for LoRA layers.">>
+    }.
+
+get_conversion_params_doc() ->
+    #{
+        <<"session_id">> => <<"Required. The session containing the 'finetune_lora' output.">>,
+        <<"base_model_id">> => iolist_to_binary(io_lib:format(<<"Optional. The base model ID used for training. Defaults to ~s.">>, [?DEFAULT_BASE_MODEL])),
+        <<"gguf_precision">> => iolist_to_binary(io_lib:format(<<"Optional. The quantization for the GGUF file. Defaults to ~s.">>, [?DEFAULT_GGUF_PRECISION]))
+    }.
+
+parse_training_params(M) ->
+    case maps:get(<<"session_id">>, M, undefined) of
+        undefined -> {error, <<"Missing required parameter: session_id">>};
+        SessionID ->
+            case maps:get(<<"dataset_path">>, M, undefined) of
+                undefined -> {error, <<"Missing required parameter: dataset_path">>};
+                DatasetPath ->
+                    ModelID = maps:get(<<"model_id">>, M, ?DEFAULT_BASE_MODEL),
+                    % Collect all optional params, only including them if they exist in M.
+                    LoraParams = maps:from_list([
+                        {K, maps:get(atom_to_binary(K, utf8), M)}
+                        || K <- [num_epochs, batch_size, lora_rank, lora_alpha, lora_dropout],
+                           maps:is_key(atom_to_binary(K, utf8), M)
+                    ]),
+                    FinalParams = LoraParams#{dataset_path => DatasetPath},
+                    {ok, {SessionID, ModelID, FinalParams}}
             end
-        end,
-        #{},
-        BinMap
-    ).
+    end.
+
+parse_conversion_params(M) ->
+    BaseModelID = maps:get(<<"base_model_id">>, M, ?DEFAULT_BASE_MODEL),
+    GGUFPrecision = maps:get(<<"gguf_precision">>, M, ?DEFAULT_GGUF_PRECISION),
+    GGUFParams = #{gguf_precision => GGUFPrecision},
+    {BaseModelID, GGUFParams}.
+
+error_response(Status, Error, Reason) when is_binary(Reason) ->
+    Body = hb_json:encode(#{<<"error">> => Error, <<"reason">> => Reason}),
+    {ok, #{ <<"body">> => Body, <<"status">> => Status }};
+error_response(Status, Error, Reason) ->
+    ReasonBin = iolist_to_binary(io_lib:format("~p", [Reason])),
+    Body = hb_json:encode(#{<<"error">> => Error, <<"reason">> => ReasonBin}),
+    {ok, #{ <<"body">> => Body, <<"status">> => Status }}.
 
 %% ===================================================================
 %% EUnit Tests
 %% ===================================================================
 -ifdef(TEST).
 
--define(TEST_SESSION_ID, <<"eunit_training_session">>).
--define(TEST_MODEL_ID, <<"Qwen/Qwen1.5-0.5B-Chat">>).
--define(TEST_DATA_FILE, <<"native/pyrust_nn/data.json">>).
+-define(TEST_SESSION, <<"pipeline_test_session">>).
+-define(TEST_DATA, <<"native/pyrust_nn/data.json">>).
 
 setup() ->
-    % Ensure the session directory does not exist before the test
-    file:del_dir_r(filename:join(["runs", binary_to_list(?TEST_SESSION_ID)])).
-
-teardown(_) ->
-    % Clean up the session directory after the test
+    file:del_dir_r(filename:join("runs", binary_to_list(?TEST_SESSION))),
     ok.
 
-check_python_env_device_test_() ->
-    {setup,
-     fun setup/0,
-     fun teardown/1,
-     fun(_) ->
-        ?_test(
-        begin
-            M2 = #{ <<"session_id">> => ?TEST_SESSION_ID },
-            {ok, Response} = check_python_env(#{}, M2, #{}),
-            ?assertEqual(200, maps:get(<<"status">>, Response)),
-            Body = hb_json:decode(maps:get(<<"body">>, Response)),
-            ?assertEqual(<<"success">>, maps:get(<<"status">>, Body)),
-            ?assertEqual(<<"Successfully imported torch and transformers.">>, maps:get(<<"message">>, Body))
-        end)
-     end}.
+teardown(_) ->
+    file:del_dir_r(filename:join("runs", binary_to_list(?TEST_SESSION))),
+    ok.
 
-finetune_lora_device_success_test_() ->
-    {setup,
-     fun setup/0,
-     fun teardown/1,
-     fun(_) ->
-        ?_test(
+full_pipeline_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(_) -> ?_test(
         begin
             M2 = #{
-                <<"session_id">> => ?TEST_SESSION_ID,
-                <<"model_id">> => ?TEST_MODEL_ID,
-                <<"dataset_path">> => ?TEST_DATA_FILE,
+                <<"session_id">> => ?TEST_SESSION,
+                <<"dataset_path">> => ?TEST_DATA,
                 <<"num_epochs">> => 1,
-                <<"batch_size">> => 1
+                <<"lora_rank">> => 2,
+                % FIX: Use a supported quantization type.
+                <<"gguf_precision">> => <<"q8_0">>
             },
-            {ok, Response} = finetune_lora(#{}, M2, #{}),
+
+            {ok, Response} = train_and_convert(#{}, M2, #{}),
             ?assertEqual(200, maps:get(<<"status">>, Response)),
             Body = hb_json:decode(maps:get(<<"body">>, Response)),
-            ?assertEqual(<<"success">>, maps:get(<<"status">>, Body)),
-            ?assert(maps:is_key(<<"adapter_path">>, Body))
-        end)
-     end}.
+            ?assert(maps:is_key(<<"adapter_path">>, Body)),
+            ?assert(maps:is_key(<<"gguf_path">>, Body)),
 
-finetune_lora_device_missing_param_test() ->
-    ?_test(
-    begin
-        % Missing session_id
-        M2_no_session = #{ <<"model_id">> => ?TEST_MODEL_ID, <<"dataset_path">> => ?TEST_DATA_FILE },
-        {ok, R1} = finetune_lora(#{}, M2_no_session, #{}),
-        ?assertEqual(400, maps:get(<<"status">>, R1)),
-        ?assertMatch(#{<<"error">> := <<"Missing required parameter: 'session_id'">>}, hb_json:decode(maps:get(<<"body">>, R1))),
+            AdapterPath = maps:get(<<"adapter_path">>, Body),
+            GGUFPath = maps:get(<<"gguf_path">>, Body),
+            ?assert(filelib:is_dir(binary_to_list(AdapterPath))),
+            ?assert(filelib:is_regular(binary_to_list(GGUFPath)))
+        end
+    ) end}.
 
-        % Missing model_id
-        M2_no_model = #{ <<"session_id">> => ?TEST_SESSION_ID, <<"dataset_path">> => ?TEST_DATA_FILE },
-        {ok, R2} = finetune_lora(#{}, M2_no_model, #{}),
-        ?assertEqual(400, maps:get(<<"status">>, R2)),
-        ?assertMatch(#{<<"error">> := <<"Missing required parameter: 'model_id'">>}, hb_json:decode(maps:get(<<"body">>, R2))),
+train_only_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(_) -> ?_test(
+        begin
+            M2 = #{
+                <<"session_id">> => ?TEST_SESSION,
+                <<"dataset_path">> => ?TEST_DATA,
+                <<"num_epochs">> => 1
+            },
+            {ok, Response} = train(#{}, M2, #{}),
+            ?assertEqual(200, maps:get(<<"status">>, Response)),
+            Body = hb_json:decode(maps:get(<<"body">>, Response)),
+            ?assert(maps:is_key(<<"adapter_path">>, Body)),
+            AdapterPath = maps:get(<<"adapter_path">>, Body),
+            ?assert(filelib:is_dir(binary_to_list(AdapterPath)))
+        end
+    ) end}.
 
-        % Missing dataset_path
-        M2_no_data = #{ <<"session_id">> => ?TEST_SESSION_ID, <<"model_id">> => ?TEST_MODEL_ID },
-        {ok, R3} = finetune_lora(#{}, M2_no_data, #{}),
-        ?assertEqual(400, maps:get(<<"status">>, R3)),
-        ?assertMatch(#{<<"error">> := <<"Missing required parameter: 'dataset_path'">>}, hb_json:decode(maps:get(<<"body">>, R3)))
-    end).
+convert_only_after_train_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(_) -> ?_test(
+        begin
+            % Step 1: Train something to have a file to convert
+            TrainM2 = #{
+                <<"session_id">> => ?TEST_SESSION,
+                <<"dataset_path">> => ?TEST_DATA,
+                <<"num_epochs">> => 1
+            },
+            {ok, _} = train(#{}, TrainM2, #{}),
 
-to_atom_map_helper_test() ->
-    ?_test(
-    begin
-        InputMap = #{
-            <<"dataset_path">> => <<"data.json">>,
-            <<"num_epochs">> => <<"5">>, % String number
-            <<"learning_rate">> => 0.0002, % Float
-            <<"unknown_param">> => <<"should be ignored">>
-        },
-        ExpectedMap = #{
-            dataset_path => <<"data.json">>,
-            num_epochs => 5,
-            learning_rate => 0.0002
-        },
-        ?assertEqual(ExpectedMap, to_atom_map(InputMap))
-    end).
+            % Step 2: Now convert it
+            ConvertM2 = #{
+                <<"session_id">> => ?TEST_SESSION,
+                <<"gguf_precision">> => <<"f16">>
+            },
+            {ok, Response} = convert(#{}, ConvertM2, #{}),
+            ?assertEqual(200, maps:get(<<"status">>, Response)),
+            Body = hb_json:decode(maps:get(<<"body">>, Response)),
+            ?assert(maps:is_key(<<"gguf_path">>, Body)),
+            GGUFPath = maps:get(<<"gguf_path">>, Body),
+            ?assert(filelib:is_regular(binary_to_list(GGUFPath)))
+        end
+    ) end}.
+
+missing_params_test() ->
+    ?assertMatch({ok, #{<<"status">> := 400}}, train(#{}, #{}, #{})),
+    ?assertMatch({ok, #{<<"status">> := 400}}, train(#{}, #{<<"session_id">> => <<"s">>}, #{})),
+    ?assertMatch({ok, #{<<"status">> := 400}}, convert(#{}, #{}, #{})),
+    ?assertMatch({ok, #{<<"status">> := 404}}, convert(#{}, #{<<"session_id">> => <<"non-existent">>}, #{})) .
 
 -endif.
