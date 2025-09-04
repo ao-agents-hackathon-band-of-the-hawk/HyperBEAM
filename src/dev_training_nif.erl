@@ -40,7 +40,7 @@ check_python_env_test() ->
 %% @doc This is an integration test. It fine-tunes a LoRA adapter and then converts it to GGUF.
 finetune_lora_and_convert_to_gguf_test() ->
     SessionID = <<"eunit-lora-gguf-session">>,
-    ModelID = <<"Qwen/Qwen1.5-1.8B-Chat">>,
+    ModelID = <<"Qwen/Qwen3-1.7B">>,
     DataFile = <<"native/pyrust_nn/data.json">>,
 
     LoraParams = #{

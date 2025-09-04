@@ -42,7 +42,7 @@ info(_Msg1, _Msg2, _Opts) ->
 
 infer(M1, M2, Opts) ->
     TxID = maps:get(<<"model-id">>, M2, undefined),
-    DefaultModel = <<"Qwen1.5-1.8B-Chat.gguf">>,
+    DefaultModel = <<"Qwen3-1.7B-Q8_0.gguf">>,
 
     ModelPath =
         case TxID of
@@ -360,8 +360,11 @@ save_llm_response(SessionID, LLMResponse) ->
         {error, enoent} -> []
     end,
 
+    % New Stage: Remove <think> </think> tags and their contents.
+    CleanedThink = re:replace(LLMResponse, "(?s)<think>.*?</think>", <<>>, [global, {return, binary}]),
+
     % Stage 1: Remove multi-line code blocks entirely.
-    CleanedAfterCodeBlocks = re:replace(LLMResponse, "(?s)```.*?```", <<>>, [global, {return, binary}]),
+    CleanedAfterCodeBlocks = re:replace(CleanedThink, "(?s)```.*?```", <<>>, [global, {return, binary}]),
 
     % Stage 2: Remove common inline formatting characters.
     CleanedAfterInline = re:replace(CleanedAfterCodeBlocks, "[\\*_`~]", <<>>, [global, {return, binary}]),
@@ -421,7 +424,7 @@ test_infer_and_save_response() ->
         <<"session_id">> => ?TEST_SESSION_ID
     })},
     % M2 is the direct request to the wasi-nn device
-    M2 = #{<<"model_path">> => <<"models/Qwen1.5-1.8B-Chat.gguf">>, % Assumes a test model exists
+    M2 = #{<<"model_path">> => <<"models/Qwen3-1.7B-Q8_0.gguf">>, % Assumes a test model exists
            <<"prompt">> => <<"In one sentence, respond to this question:">>},
     
     {ok, Response} = infer(M1, M2, #{}),

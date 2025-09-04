@@ -1,5 +1,5 @@
 {
-  "model_name": "Qwen/Qwen1.5-1.8B-Chat",
+  "model_name": "Qwen/Qwen3-1.7B",
   "dataset_path": "data.json",
   "output_dir": "models/finetuned",
   "output_lora_dir": "models/lora_adapter",

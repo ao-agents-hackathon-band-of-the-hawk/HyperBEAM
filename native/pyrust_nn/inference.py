@@ -3,7 +3,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 def run_inference(params):
     """Runs inference on a model."""
-    model_name = params.get("model_name", "Qwen/Qwen1.5-1.8B-Chat")
+    model_name = params.get("model_name", "Qwen/Qwen3-1.7B")
     prompt = params.get("prompt", "Give me a short introduction to large language model.")
     max_new_tokens = params.get("max_new_tokens", 512)
     

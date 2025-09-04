@@ -31,7 +31,7 @@ fn main() -> Result<()> {
     log::info!("--- Project Root: {:?} ---", &project_root);
     
     // === 2. DEFINE PARAMETERS ===
-    let base_model_id = "Qwen/Qwen1.5-1.8B-Chat";
+    let base_model_id = "Qwen/Qwen3-1.7B";
     let dataset_file = "data.json";
 
     let finetune_full_params = FinetuneFullParams {

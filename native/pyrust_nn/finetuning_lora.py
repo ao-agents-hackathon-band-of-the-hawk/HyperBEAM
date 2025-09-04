@@ -58,7 +58,7 @@ def data_loader(dataset_path, tokenizer, sample_start=0, max_length=512):
 
 def fine_tune_lora(params):
     """LoRA fine-tuning function."""
-    model_name = params.get("model_name", "Qwen/Qwen1.5-1.8B-Chat")
+    model_name = params.get("model_name", "Qwen/Qwen3-1.7B")
     dataset_path = params["dataset_path"]
     output_lora_dir = params.get("output_lora_dir", "lora_adapter")
     num_epochs = params.get("num_epochs", 3)

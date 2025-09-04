@@ -16,7 +16,7 @@ def lora_to_gguf(params):
         raise FileNotFoundError(f"Conversion script not found at expected path: {script_path}")
     # --- END OF FIX ---
 
-    model_name = params.get("model_name", "Qwen/Qwen1.5-1.8B-Chat")
+    model_name = params.get("model_name", "Qwen/Qwen3-1.7B")
     adapter_path = os.path.abspath(params["adapter_path"])
     gguf_precision = params.get("gguf_precision", "f16")
     gguf_output_path_lora = params.get("gguf_output_path_lora", os.path.join(adapter_path, "lora.gguf"))

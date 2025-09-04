@@ -3,7 +3,7 @@
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--define(DEFAULT_BASE_MODEL, <<"Qwen/Qwen1.5-1.8B-Chat">>).
+-define(DEFAULT_BASE_MODEL, <<"Qwen/Qwen3-1.7B">>).
 -define(DEFAULT_GGUF_PRECISION, <<"q8_0">>).
 
 %% @doc Declares the functions this device exports.
