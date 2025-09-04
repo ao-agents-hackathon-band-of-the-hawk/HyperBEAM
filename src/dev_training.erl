@@ -1,5 +1,5 @@
 -module(dev_training).
--export([train/3, convert/3, train_and_convert/3, info/1, info/3]).
+-export([train/3, convert/3, train_and_convert/3, info/1, info/3, download/3]).
 -include("include/hb.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -8,7 +8,7 @@
 
 %% @doc Declares the functions this device exports.
 info(_) ->
-    #{exports => [train, convert, train_and_convert, info]}.
+    #{exports => [train, convert, train_and_convert, info, download]}.
 
 %% @doc Provides API information for all functions.
 info(_M1, _M2, _Opts) ->
@@ -33,6 +33,13 @@ info(_M1, _M2, _Opts) ->
                     get_training_params_doc(<<"Required.">>),
                     get_conversion_params_doc()
                 )
+            },
+            <<"download">> => #{
+                <<"description">> => <<"4) Downloads the GGUF model file for the given session_id. If not found locally, attempts to download from Arweave.">>,
+                <<"method">> => <<"POST">>,
+                <<"parameters">> => #{
+                    <<"session_id">> => <<"Required. The session ID to download the GGUF model for.">>
+                }
             }
         }
     },
@@ -112,6 +119,42 @@ train_and_convert(_M1, M2, _Opts) ->
             end;
         {error, Reason} ->
             error_response(400, <<"Invalid parameters">>, Reason)
+    end.
+
+%% @doc 4) Downloads the GGUF model for the given session_id.
+download(_M1, M2, _Opts) ->
+    case maps:get(<<"session_id">>, M2, undefined) of
+        undefined ->
+            error_response(400, <<"Missing required parameter">>, <<"session_id">>);
+        SessionID ->
+            case resolve_lora_path(SessionID) of
+                {ok, GGUFPath} ->
+                    case file:read_file(GGUFPath) of
+                        {ok, Binary} ->
+                            Headers = #{
+                                <<"Content-Type">> => <<"application/octet-stream">>,
+                                <<"Content-Disposition">> => <<"attachment; filename=\"lora_adapter.gguf\"">>,
+                                <<"Content-Length">> => integer_to_binary(byte_size(Binary))
+                            },
+                            {ok, #{ <<"body">> => Binary, <<"status">> => 200, <<"headers">> => Headers }};
+                        {error, ReadReason} ->
+                            error_response(500, <<"Failed to read model file">>, ReadReason)
+                    end;
+                {error, Reason} ->
+                    error_response(404, <<"Model not found for session">>, Reason)
+            end
+    end.
+
+%% @spec resolve_lora_path(binary()) -> {ok, binary()} | {error, any()}.
+resolve_lora_path(LoraID) ->
+    LocalPathStr = filename:join(["runs", binary_to_list(LoraID), "lora_to_gguf", "lora_adapter.gguf"]),
+    case filelib:is_regular(LocalPathStr) of
+        true ->
+            ?event(dev_wasi_nn, {lora_found_locally, LoraID, LocalPathStr}),
+            {ok, list_to_binary(LocalPathStr)};
+        false ->
+            ?event(dev_wasi_nn, {lora_not_found_locally, LoraID, "attempting_arweave_download"}),
+            download_and_store_lora(LoraID)
     end.
 
 %% --- Private Helper Functions ---
