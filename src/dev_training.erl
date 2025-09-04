@@ -46,8 +46,8 @@ info(_M1, _M2, _Opts) ->
     {ok, InfoBody}.
 
 %% @doc 1) Fine-tunes a LoRA adapter (safetensors).
-train(_M1, M2, _Opts) ->
-    case parse_training_params(M2) of
+train(M1, M2, _Opts) ->
+    case parse_training_params(M1, M2) of
         {ok, {SessionID, ModelID, LoraParams}} ->
             case dev_training_nif:finetune_lora_nif(SessionID, ModelID, LoraParams) of
                 {ok, AdapterPath} ->
@@ -95,8 +95,8 @@ convert(_M1, M2, _Opts) ->
 
 
 %% @doc 3) Fine-tunes and then converts to GGUF.
-train_and_convert(_M1, M2, _Opts) ->
-    case parse_training_params(M2) of
+train_and_convert(M1, M2, _Opts) ->
+    case parse_training_params(M1, M2) of
         {ok, {SessionID, ModelID, LoraParams}} ->
             case dev_training_nif:finetune_lora_nif(SessionID, ModelID, LoraParams) of
                 {ok, AdapterPath} ->
@@ -181,7 +181,7 @@ get_training_params_doc(SessionIDRequirement) ->
     #{
         <<"session_id">> => SessionIDRequirement,
         <<"model_id">> => iolist_to_binary(io_lib:format(<<"Optional. The base model ID from Hugging Face. Defaults to ~s.">>, [?DEFAULT_BASE_MODEL])),
-        <<"dataset_path">> => <<"Required. Path to the training data JSON file.">>,
+        <<"dataset">> => <<"Required in body. The training data as JSON array.">>,
         <<"num_epochs">> => <<"Optional. Number of training epochs.">>,
         <<"batch_size">> => <<"Optional. Training batch size.">>,
         <<"lora_rank">> => <<"Optional. The rank for the LoRA matrices.">>,
@@ -196,22 +196,46 @@ get_conversion_params_doc() ->
         <<"gguf_precision">> => iolist_to_binary(io_lib:format(<<"Optional. The quantization for the GGUF file. Defaults to ~s.">>, [?DEFAULT_GGUF_PRECISION]))
     }.
 
-parse_training_params(M) ->
-    case maps:get(<<"session_id">>, M, undefined) of
+parse_training_params(M1, M2) ->
+    case maps:get(<<"session_id">>, M2, undefined) of
         undefined -> {error, <<"Missing required parameter: session_id">>};
         SessionID ->
-            case maps:get(<<"dataset_path">>, M, undefined) of
-                undefined -> {error, <<"Missing required parameter: dataset_path">>};
-                DatasetPath ->
-                    ModelID = maps:get(<<"model_id">>, M, ?DEFAULT_BASE_MODEL),
-                    % Collect all optional params, only including them if they exist in M.
-                    LoraParams = maps:from_list([
-                        {K, maps:get(atom_to_binary(K, utf8), M)}
-                        || K <- [num_epochs, batch_size, lora_rank, lora_alpha, lora_dropout],
-                           maps:is_key(atom_to_binary(K, utf8), M)
-                    ]),
-                    FinalParams = LoraParams#{dataset_path => DatasetPath},
-                    {ok, {SessionID, ModelID, FinalParams}}
+            Body = maps:get(<<"body">>, M1, <<>>),
+            case Body of
+                <<>> -> {error, <<"Missing required dataset in request body">>};
+                _ ->
+                    try hb_json:decode(Body) of
+                        Dataset when is_list(Dataset), Dataset =/= [] ->
+                            DatasetDirStr = filename:join(["runs", binary_to_list(SessionID), "dataset"]),
+                            case filelib:ensure_dir(DatasetDirStr ++ "/") of
+                                ok ->
+                                    DatasetPathStr = filename:join(DatasetDirStr, "data.json"),
+                                    case file:write_file(DatasetPathStr, Body) of
+                                        ok ->
+                                            DatasetPath = list_to_binary(DatasetPathStr),
+                                            ModelID = maps:get(<<"model_id">>, M2, ?DEFAULT_BASE_MODEL),
+                                            % Collect all optional params, only including them if they exist in M2.
+                                            LoraParams = maps:from_list([
+                                                {K, maps:get(atom_to_binary(K, utf8), M2)}
+                                                || K <- [num_epochs, batch_size, lora_rank, lora_alpha, lora_dropout],
+                                                   maps:is_key(atom_to_binary(K, utf8), M2)
+                                            ]),
+                                            FinalParams = LoraParams#{dataset_path => DatasetPath},
+                                            {ok, {SessionID, ModelID, FinalParams}};
+                                        {error, WriteReason} ->
+                                            ReasonBin = iolist_to_binary(io_lib:format("Failed to write dataset file: ~p", [WriteReason])),
+                                            {error, ReasonBin}
+                                    end;
+                                {error, DirReason} ->
+                                    ReasonBin = iolist_to_binary(io_lib:format("Failed to create dataset directory: ~p", [DirReason])),
+                                    {error, ReasonBin}
+                            end;
+                        _ ->
+                            {error, <<"Invalid dataset format: must be a non-empty JSON array">>}
+                    catch
+                        _:_ ->
+                            {error, <<"Invalid JSON in request body">>}
+                    end
             end
     end.
 
@@ -235,7 +259,7 @@ error_response(Status, Error, Reason) ->
 -ifdef(TEST).
 
 -define(TEST_SESSION, <<"pipeline_test_session">>).
--define(TEST_DATA, <<"native/pyrust_nn/data.json">>).
+-define(TEST_DATA_PATH, <<"native/pyrust_nn/data.json">>).
 
 setup() ->
     file:del_dir_r(filename:join("runs", binary_to_list(?TEST_SESSION))),
@@ -247,16 +271,17 @@ teardown(_) ->
 full_pipeline_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(_) -> ?_test(
         begin
+            {ok, TestDataBin} = file:read_file(?TEST_DATA_PATH),
+            M1 = #{<<"body">> => TestDataBin},
             M2 = #{
                 <<"session_id">> => ?TEST_SESSION,
-                <<"dataset_path">> => ?TEST_DATA,
                 <<"num_epochs">> => 1,
                 <<"lora_rank">> => 2,
                 % FIX: Use a supported quantization type.
                 <<"gguf_precision">> => <<"q8_0">>
             },
 
-            {ok, Response} = train_and_convert(#{}, M2, #{}),
+            {ok, Response} = train_and_convert(M1, M2, #{}),
             ?assertEqual(200, maps:get(<<"status">>, Response)),
             Body = hb_json:decode(maps:get(<<"body">>, Response)),
             ?assert(maps:is_key(<<"adapter_path">>, Body)),
@@ -272,12 +297,13 @@ full_pipeline_test_() ->
 train_only_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(_) -> ?_test(
         begin
+            {ok, TestDataBin} = file:read_file(?TEST_DATA_PATH),
+            M1 = #{<<"body">> => TestDataBin},
             M2 = #{
                 <<"session_id">> => ?TEST_SESSION,
-                <<"dataset_path">> => ?TEST_DATA,
                 <<"num_epochs">> => 1
             },
-            {ok, Response} = train(#{}, M2, #{}),
+            {ok, Response} = train(M1, M2, #{}),
             ?assertEqual(200, maps:get(<<"status">>, Response)),
             Body = hb_json:decode(maps:get(<<"body">>, Response)),
             ?assert(maps:is_key(<<"adapter_path">>, Body)),
@@ -290,12 +316,13 @@ convert_only_after_train_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(_) -> ?_test(
         begin
             % Step 1: Train something to have a file to convert
+            {ok, TestDataBin} = file:read_file(?TEST_DATA_PATH),
+            TrainM1 = #{<<"body">> => TestDataBin},
             TrainM2 = #{
                 <<"session_id">> => ?TEST_SESSION,
-                <<"dataset_path">> => ?TEST_DATA,
                 <<"num_epochs">> => 1
             },
-            {ok, _} = train(#{}, TrainM2, #{}),
+            {ok, _} = train(TrainM1, TrainM2, #{}),
 
             % Step 2: Now convert it
             ConvertM2 = #{
@@ -313,6 +340,7 @@ convert_only_after_train_test_() ->
 
 missing_params_test() ->
     ?assertMatch({ok, #{<<"status">> := 400}}, train(#{}, #{}, #{})),
+    ?assertMatch({ok, #{<<"status">> := 400}}, train(#{<<"body">> => <<"{}">>}, #{<<"session_id">> => <<"s">>}, #{})),
     ?assertMatch({ok, #{<<"status">> := 400}}, train(#{}, #{<<"session_id">> => <<"s">>}, #{})),
     ?assertMatch({ok, #{<<"status">> := 400}}, convert(#{}, #{}, #{})),
     ?assertMatch({ok, #{<<"status">> := 404}}, convert(#{}, #{<<"session_id">> => <<"non-existent">>}, #{})) .
