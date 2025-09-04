@@ -111,7 +111,7 @@ class Generator:
         text: str,
         speaker: int,
         context: List[Segment],
-        max_audio_length_ms: float = 900_000,
+        max_audio_length_ms: float = 200_000,
         temperature: float = 0.9,
         topk: int = 50,
         seed: int = 42,
@@ -141,11 +141,11 @@ class Generator:
         curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-        max_seq_len = 16384
+        max_seq_len = 3750
         max_context_len = max_seq_len - max_generation_len
         if curr_tokens.size(1) >= max_context_len:
             raise ValueError(
-                f"Inputs too long, must be below max_seq_len - max_generation_len: {max_context_len}"
+                f"Inputs too long, must be below max_seq_len{max_seq_len} - max_generation_len{max_generation_len}: {max_context_len}"
             )
 
         for _ in range(max_generation_len):

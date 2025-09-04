@@ -194,7 +194,9 @@ fn generate_audio<'a>(
 
             let kwargs = PyDict::new(py);
             kwargs.set_item("context", context)?;
-            kwargs.set_item("max_audio_length_ms", 900_000)?;
+            kwargs.set_item("max_audio_length_ms", 200_000)?;
+            eprintln!("Generating audio for text: {}", text);
+            eprintln!("max_audio_length_ms set to 200000 ms (3.3 minutes)");
 
             let audio_tensor =
                 TTS_MODEL
