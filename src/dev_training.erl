@@ -157,6 +157,24 @@ resolve_lora_path(LoraID) ->
             download_and_store_lora(LoraID)
     end.
 
+%% @doc Downloads the LoRA adapter from Arweave and stores it locally.
+download_and_store_lora(LoraID) ->
+    ArweaveURL = <<"https://arweave.net/", LoraID/binary>>,
+    inets:start(),
+    case httpc:request(get, {binary_to_list(ArweaveURL), []}, [], [{body_format, binary}]) of
+        {ok, {{_, 200, _}, _, Body}} ->
+            LocalDir = filename:join(["runs", binary_to_list(LoraID), "lora_to_gguf"]),
+            ok = file:make_dir(LocalDir),
+            LocalPathStr = filename:join(LocalDir, "lora_adapter.gguf"),
+            ok = file:write_file(LocalPathStr, Body),
+            ?event(dev_wasi_nn, {lora_downloaded_from_arweave, LoraID, LocalPathStr}),
+            {ok, list_to_binary(LocalPathStr)};
+        {ok, {{_, Status, _}, _, _}} ->
+            {error, iolist_to_binary(io_lib:format("Arweave download failed with status ~p", [Status]))};
+        {error, Reason} ->
+            {error, iolist_to_binary(io_lib:format("Arweave download error: ~p", [Reason]))}
+    end.
+
 %% --- Private Helper Functions ---
 
 get_training_params_doc(SessionIDRequirement) ->
