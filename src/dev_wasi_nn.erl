@@ -374,7 +374,10 @@ save_llm_response(SessionID, LLMResponse) ->
     CleanedNewlines = re:replace(SanitizedResponse, "[\\r\\n]+", <<" ">>, [global, {return, binary}]),
 
     % Stage 5: Trim leading/trailing whitespace from the final result.
-    FinalResponse = re:replace(CleanedNewlines, "^\\s+|\\s+$", <<>>, [{return, binary}]),
+    TrimmedResponse = re:replace(CleanedNewlines, "^\\s+|\\s+$", <<>>, [{return, binary}]),
+
+    % New Stage: Remove all non-alphabetic and non-space characters, keeping only A-Z, a-z, and spaces.
+    FinalResponse = re:replace(TrimmedResponse, "[^a-zA-Z ]", <<>>, [global, {return, binary}]),
 
     NewList = CurrentList ++ [FinalResponse],
     file:write_file(JsonPath, hb_json:encode(NewList)).
