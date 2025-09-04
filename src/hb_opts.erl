@@ -175,7 +175,8 @@ default_message() ->
             #{<<"name">> => <<"whois@1.0">>, <<"module">> => dev_whois},
             #{<<"name">> => <<"private@1.0">>, <<"module">> => dev_private},
             #{<<"name">> => <<"speech-to-text@1.0">>, <<"module">> => dev_speech_to_text},
-            #{<<"name">> => <<"text-to-speech@1.0">>, <<"module">> => dev_text_to_speech}
+            #{<<"name">> => <<"text-to-speech@1.0">>, <<"module">> => dev_text_to_speech},
+            #{<<"name">> => <<"training@1.0">>, <<"module">> => dev_training}
         ],
         %% Default execution cache control options
         cache_control => [<<"no-cache">>, <<"no-store">>],
