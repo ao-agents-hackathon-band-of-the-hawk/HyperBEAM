@@ -216,7 +216,7 @@ parse_training_params(M1, M2) ->
                                             ModelID = maps:get(<<"model_id">>, M2, ?DEFAULT_BASE_MODEL),
                                             % Collect all optional params, only including them if they exist in M2.
                                             LoraParams = maps:from_list([
-                                                {K, maps:get(atom_to_binary(K, utf8), M2)}
+                                                {K, parse_param(K, maps:get(atom_to_binary(K, utf8), M2))}
                                                 || K <- [num_epochs, batch_size, lora_rank, lora_alpha, lora_dropout],
                                                    maps:is_key(atom_to_binary(K, utf8), M2)
                                             ]),
@@ -238,6 +238,11 @@ parse_training_params(M1, M2) ->
                     end
             end
     end.
+
+parse_param(K, V) when K =:= num_epochs; K =:= batch_size; K =:= lora_rank; K =:= lora_alpha ->
+    binary_to_integer(V);
+parse_param(lora_dropout, V) ->
+    binary_to_float(V).
 
 parse_conversion_params(M) ->
     BaseModelID = maps:get(<<"base_model_id">>, M, ?DEFAULT_BASE_MODEL),
@@ -275,8 +280,8 @@ full_pipeline_test_() ->
             M1 = #{<<"body">> => TestDataBin},
             M2 = #{
                 <<"session_id">> => ?TEST_SESSION,
-                <<"num_epochs">> => 1,
-                <<"lora_rank">> => 2,
+                <<"num_epochs">> => <<"1">>,
+                <<"lora_rank">> => <<"2">>,
                 % FIX: Use a supported quantization type.
                 <<"gguf_precision">> => <<"q8_0">>
             },
@@ -301,7 +306,7 @@ train_only_test_() ->
             M1 = #{<<"body">> => TestDataBin},
             M2 = #{
                 <<"session_id">> => ?TEST_SESSION,
-                <<"num_epochs">> => 1
+                <<"num_epochs">> => <<"1">>
             },
             {ok, Response} = train(M1, M2, #{}),
             ?assertEqual(200, maps:get(<<"status">>, Response)),
@@ -320,7 +325,7 @@ convert_only_after_train_test_() ->
             TrainM1 = #{<<"body">> => TestDataBin},
             TrainM2 = #{
                 <<"session_id">> => ?TEST_SESSION,
-                <<"num_epochs">> => 1
+                <<"num_epochs">> => <<"1">>
             },
             {ok, _} = train(TrainM1, TrainM2, #{}),
 
